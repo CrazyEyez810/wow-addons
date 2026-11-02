@@ -52,7 +52,8 @@ Expect("start of level 10, on plan", "on pace")
 now = now + 20 * 60; xp = 7600 * 0.25   -- 20 min in, 25% done: plan expects 8.2 min
 Fire("PLAYER_XP_UPDATE")
 Expect("slow first 20 minutes", "11m 47s behind")
-Expect("countdown next to the goal", "goal 32:54 | 12:54")
+if texts[order[2]]:find("^|cffff5050") then fails = fails + 1 print("FAIL timer red under the goal") else print("PASS timer is white under the goal") end
+Expect("timer next to the goal counts up", "goal 32:54 | 20:00")
 xp = 7600 * 0.75                         -- 75% done at 20 min: plan expects 24.7 min
 Fire("PLAYER_XP_UPDATE")
 Expect("fast first 20 minutes", "4m 41s ahead")
@@ -62,10 +63,11 @@ Fire("PLAYER_LEVEL_UP", 11)
 print("  ding message: " .. (notices[1] or "none"))
 if not (notices[1] or ""):find("2m 54s under target", 1, true) then fails = fails + 1 print("FAIL ding message") end
 Fire("PLAYER_XP_UPDATE")
-Expect("new level resets the countdown", "goal 36:24 | 36:24")
+Expect("new level resets the timer", "goal 36:24 | 0:00")
 SlashCmdList.ONECLICKSPLITS("plan melee")
 Expect("melee plan goal for 11", "goal 31:00")
 now = now + 35 * 60
 Fire("PLAYER_XP_UPDATE")
-Expect("over the goal counts up in red", "+4:00")
+Expect("over the goal keeps counting", "goal 31:00 | 35:00")
+if not texts[order[2]]:find("^|cffff5050") then fails = fails + 1 print("FAIL timer not red over the goal") else print("PASS timer is red over the goal") end
 print(fails == 0 and "ALL PASS" or fails .. " FAILED")

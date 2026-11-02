@@ -100,7 +100,7 @@ end
 
 -- Panel ----------------------------------------------------------------------
 
--- Returns the goal line, the countdown next to it, and the lines below.
+-- Returns the goal line, the timer next to it, and the lines below.
 local function Lines()
     local level = UnitLevel("player")
     local plan = Plan()
@@ -109,15 +109,13 @@ local function Lines()
     local total, levelTime = Played()
     local goal = ("%sLevel %d  %sgoal %s%s"):format(GOLD, level, GRAY, WHITE, Clock(target * 60))
     if not levelTime then
-        return goal, GRAY .. "--:--", { GRAY .. "Reading time played..." }
+        return goal, GRAY .. "0:00", { GRAY .. "Reading time played..." }
     end
 
-    -- Counts down to the goal; past it, counts up in red.
-    local left = target * 60 - levelTime
-    local timer = left >= 0 and (GREEN .. Clock(left)) or (RED .. "+" .. Clock(left))
+    -- Time on this level, counting up; red once it passes the goal.
+    local timer = (levelTime > target * 60 and RED or WHITE) .. Clock(levelTime)
 
     local lines = {}
-    lines[#lines + 1] = ("%sElapsed %s%s"):format(GRAY, WHITE, Clock(levelTime))
 
     -- Where the plan expects you right now: its time at the start of this
     -- level plus the same share of this level as your XP bar shows.
@@ -172,7 +170,7 @@ local function CreatePanel()
     end
     frame.goal = Text(1.15)
     frame.goal:SetPoint("TOPLEFT", 4, -8)
-    -- The countdown sits right next to the goal, twice the size.
+    -- The level timer sits right next to the goal, twice the size.
     frame.timer = Text(2)
     frame.timer:SetPoint("LEFT", frame.goal, "RIGHT", 12, 0)
     frame.text = Text(1)

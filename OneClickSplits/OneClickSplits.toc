@@ -1,7 +1,7 @@
 ## Interface: 11509, 16001
 ## Title: OneClickSplits
 ## Notes: See-through speedrun panel: target time for each level 1-60, time on your current level, and whether you're ahead or behind the plan.
-## Version: 0.3.0
+## Version: 0.4.0
 ## OptionalDeps: OneClickXP
 ## SavedVariables: OneClickSplitsDB
 ## SavedVariablesPerCharacter: OneClickSplitsChar

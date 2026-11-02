@@ -1,7 +1,7 @@
 -- Runs OneClickSplits against a fake game.
 -- Usage: luajit tools/test-splits.lua OneClickSplits/OneClickSplits.lua
 local now, level, xp, xpMax = 1000, 10, 0, 7600
-local text, shown, chat, notices = "", false, {}, {}
+local texts, order, shown, chat, notices = {}, {}, false, {}, {}
 function GetTime() return now end
 function UnitLevel() return level end
 function UnitXP() return xp end
@@ -19,7 +19,7 @@ local scripts = {}
 local function Obj(isText)
   return setmetatable({}, { __index = function(self, k)
     if k == "SetScript" then return function(o, ev, fn) scripts[o] = scripts[o] or {} scripts[o][ev] = fn end end
-    if k == "SetText" then return function(_, t) text = t end end
+    if k == "SetText" then return function(o, t) if not texts[o] then order[#order + 1] = o end texts[o] = t end end
     if k == "Show" then return function() shown = true end end
     if k == "Hide" then return function() shown = false end end
     if k == "CreateFontString" then return function() return Obj(true) end end
@@ -32,7 +32,11 @@ function CreateFrame() local f = Obj() frames[#frames + 1] = f return f end
 assert(loadfile(arg[1]))("OneClickSplits")
 local ev = frames[1]
 local function Fire(e, ...) scripts[ev].OnEvent(ev, e, ...) end
-local function Plain() return (text:gsub("|c%x%x%x%x%x%x%x%x", "")) end
+local function Plain()
+  local parts = {}
+  for _, o in ipairs(order) do parts[#parts + 1] = texts[o] end
+  return (table.concat(parts, " | "):gsub("|c%x%x%x%x%x%x%x%x", ""))
+end
 local fails = 0
 local function Expect(label, want)
   local ok = Plain():find(want, 1, true) ~= nil
@@ -48,7 +52,7 @@ Expect("start of level 10, on plan", "on pace")
 now = now + 20 * 60; xp = 7600 * 0.25   -- 20 min in, 25% done: plan expects 8.2 min
 Fire("PLAYER_XP_UPDATE")
 Expect("slow first 20 minutes", "11m 47s behind")
-Expect("time left this level", "12m 54s left")
+Expect("countdown next to the goal", "goal 32:54 | 12:54")
 xp = 7600 * 0.75                         -- 75% done at 20 min: plan expects 24.7 min
 Fire("PLAYER_XP_UPDATE")
 Expect("fast first 20 minutes", "4m 41s ahead")
@@ -58,7 +62,10 @@ Fire("PLAYER_LEVEL_UP", 11)
 print("  ding message: " .. (notices[1] or "none"))
 if not (notices[1] or ""):find("2m 54s under target", 1, true) then fails = fails + 1 print("FAIL ding message") end
 Fire("PLAYER_XP_UPDATE")
-Expect("new level resets level time", "This level 0s")
+Expect("new level resets the countdown", "goal 36:24 | 36:24")
 SlashCmdList.ONECLICKSPLITS("plan melee")
-Expect("melee plan target for 11", "target 31m 00s")
+Expect("melee plan goal for 11", "goal 31:00")
+now = now + 35 * 60
+Fire("PLAYER_XP_UPDATE")
+Expect("over the goal counts up in red", "+4:00")
 print(fails == 0 and "ALL PASS" or fails .. " FAILED")

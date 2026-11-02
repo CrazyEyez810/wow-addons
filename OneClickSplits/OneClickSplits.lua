@@ -51,6 +51,14 @@ local function FormatTime(seconds)
     return seconds .. "s"
 end
 
+-- Stopwatch style: 12:54 or 1:04:12.
+local function Clock(seconds)
+    seconds = math.floor(math.abs(seconds))
+    local h, m, sec = math.floor(seconds / 3600), math.floor((seconds % 3600) / 60), seconds % 60
+    if h > 0 then return ("%d:%02d:%02d"):format(h, m, sec) end
+    return ("%d:%02d"):format(m, sec)
+end
+
 local function Delta(seconds)
     -- Negative = ahead of the plan.
     if math.abs(seconds) < 30 then return WHITE .. "on pace" end
@@ -92,27 +100,24 @@ end
 
 -- Panel ----------------------------------------------------------------------
 
+-- Returns the goal line, the countdown next to it, and the lines below.
 local function Lines()
     local level = UnitLevel("player")
     local plan = Plan()
     local target = plan[level]
     if not target then return nil end
     local total, levelTime = Played()
-    local lines = {}
-    lines[#lines + 1] = ("%sLevel %d  %starget %s"):format(GOLD, level, GRAY, FormatTime(target * 60))
+    local goal = ("%sLevel %d  %sgoal %s%s"):format(GOLD, level, GRAY, WHITE, Clock(target * 60))
     if not levelTime then
-        lines[#lines + 1] = GRAY .. "Reading time played..."
-        return lines
+        return goal, GRAY .. "--:--", { GRAY .. "Reading time played..." }
     end
 
+    -- Counts down to the goal; past it, counts up in red.
     local left = target * 60 - levelTime
-    if left >= 0 then
-        lines[#lines + 1] = ("%sThis level %s%s %s(%s left)"):format(GRAY, WHITE, FormatTime(levelTime),
-            GREEN, FormatTime(left))
-    else
-        lines[#lines + 1] = ("%sThis level %s%s %s(%s over)"):format(GRAY, WHITE, FormatTime(levelTime),
-            RED, FormatTime(left))
-    end
+    local timer = left >= 0 and (GREEN .. Clock(left)) or (RED .. "+" .. Clock(left))
+
+    local lines = {}
+    lines[#lines + 1] = ("%sElapsed %s%s"):format(GRAY, WHITE, Clock(levelTime))
 
     -- Where the plan expects you right now: its time at the start of this
     -- level plus the same share of this level as your XP bar shows.
@@ -122,21 +127,29 @@ local function Lines()
     lines[#lines + 1] = ("%sOverall %s"):format(GRAY, Delta(total - expected))
 
     if DB.showNext ~= false and plan[level + 1] then
-        lines[#lines + 1] = ("%sNext: %d in %s"):format(GRAY, level + 1, FormatTime(plan[level + 1] * 60))
+        lines[#lines + 1] = ("%sNext: %d in %s"):format(GRAY, level + 1, Clock(plan[level + 1] * 60))
     end
-    return lines
+    return goal, timer, lines
 end
 
 local function Update()
     if not frame or not DB then return end
     local show = DB.enabled ~= false and UnitLevel("player") < MaxLevel()
-    local lines = show and Lines()
-    if not lines then
+    local goal, timer, lines
+    if show then goal, timer, lines = Lines() end
+    if not goal then
         frame:Hide()
         return
     end
+    frame.goal:SetText(goal)
+    frame.timer:SetText(timer)
     frame.text:SetText(table.concat(lines, "\n"))
-    frame:SetSize(frame.text:GetStringWidth() + 8, frame.text:GetStringHeight() + 8)
+    -- Lines start below whichever is taller: the goal or the big timer.
+    local top = math.max(frame.goal:GetStringHeight(), frame.timer:GetStringHeight())
+    frame.text:ClearAllPoints()
+    frame.text:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -(top + 10))
+    local width = math.max(frame.goal:GetStringWidth() + 12 + frame.timer:GetStringWidth(), frame.text:GetStringWidth())
+    frame:SetSize(width + 8, top + 14 + frame.text:GetStringHeight())
     frame:Show()
 end
 
@@ -149,13 +162,21 @@ local function CreatePanel()
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
     -- See-through: no background, outlined text so it reads on any scene.
-    frame.text = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    frame.text:SetPoint("TOPLEFT", 4, -4)
-    frame.text:SetJustifyH("LEFT")
+    local function Text(scale)
+        local fs = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        local font, size = fs:GetFont()
+        if font then fs:SetFont(font, math.floor(size * scale + 0.5), "OUTLINE") end
+        fs:SetShadowOffset(1, -1)
+        fs:SetJustifyH("LEFT")
+        return fs
+    end
+    frame.goal = Text(1.15)
+    frame.goal:SetPoint("TOPLEFT", 4, -8)
+    -- The countdown sits right next to the goal, twice the size.
+    frame.timer = Text(2)
+    frame.timer:SetPoint("LEFT", frame.goal, "RIGHT", 12, 0)
+    frame.text = Text(1)
     frame.text:SetSpacing(2)
-    local font, size = frame.text:GetFont()
-    if font then frame.text:SetFont(font, size, "OUTLINE") end
-    frame.text:SetShadowOffset(1, -1)
 
     local pos = DB.pos
     if pos then

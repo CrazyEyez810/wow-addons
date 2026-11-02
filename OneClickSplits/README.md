@@ -2,8 +2,8 @@
 
 A see-through speedrun panel for leveling 1 to 60 in WoW Forever. It shows:
 
-- the target time for your current level
-- how long you've spent on this level, and the time left or how far over
+- the goal time for your current level, with a large countdown clock right next to it: green while you're under the goal, red and counting up once you pass it
+- how long you've spent on this level
 - whether you're ahead of or behind the plan overall, updated live from your XP bar
 - the next level's target
 

@@ -5,6 +5,7 @@ name: Release
 #   OneClickXP-v1.0.0    packages OneClickXP/
 #   OneClickPace-v0.1.0  packages OneClickPace/
 #   OneClickMail-v0.1.0  packages OneClickMail/
+#   OneClickSplits-v0.1.0 packages OneClickSplits/
 on:
   push:
     tags:
@@ -12,6 +13,7 @@ on:
       - "OneClickXP-v*"
       - "OneClickPace-v*"
       - "OneClickMail-v*"
+      - "OneClickSplits-v*"
 
 jobs:
   release:

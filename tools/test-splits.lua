@@ -42,23 +42,23 @@ end
 Fire("ADDON_LOADED", "OneClickSplits")
 Fire("PLAYER_ENTERING_WORLD")
 Expect("before time played", "Reading time played")
--- Level 10 on the 120h plan: 48 min target; plan time before 10 = 155 min.
-Fire("TIME_PLAYED_MSG", 155 * 60, 0)
+-- Level 10 on the Shaman plan: 32.9 min target; plan time before 10 = 138.5 min.
+Fire("TIME_PLAYED_MSG", 138.5 * 60, 0)
 Expect("start of level 10, on plan", "on pace")
-now = now + 20 * 60; xp = 7600 * 0.25   -- 20 min in, 25% done: plan expects 12 min
+now = now + 20 * 60; xp = 7600 * 0.25   -- 20 min in, 25% done: plan expects 8.2 min
 Fire("PLAYER_XP_UPDATE")
-Expect("slow first 20 minutes", "8m 00s behind")
-Expect("time left this level", "28m 00s left")
-xp = 7600 * 0.75                         -- 75% done at 20 min: plan expects 36 min
+Expect("slow first 20 minutes", "11m 47s behind")
+Expect("time left this level", "12m 54s left")
+xp = 7600 * 0.75                         -- 75% done at 20 min: plan expects 24.7 min
 Fire("PLAYER_XP_UPDATE")
-Expect("fast first 20 minutes", "16m 00s ahead")
-now = now + 10 * 60                      -- ding at 30 min, target 48
+Expect("fast first 20 minutes", "4m 41s ahead")
+now = now + 10 * 60                      -- ding at 30 min, target 32.9
 level, xp, xpMax = 11, 0, 8800
 Fire("PLAYER_LEVEL_UP", 11)
 print("  ding message: " .. (notices[1] or "none"))
-if not (notices[1] or ""):find("18m 00s under target", 1, true) then fails = fails + 1 print("FAIL ding message") end
+if not (notices[1] or ""):find("2m 54s under target", 1, true) then fails = fails + 1 print("FAIL ding message") end
 Fire("PLAYER_XP_UPDATE")
 Expect("new level resets level time", "This level 0s")
-SlashCmdList.ONECLICKSPLITS("plan stretch")
-Expect("stretch plan target for 11", "target 44m 00s")
+SlashCmdList.ONECLICKSPLITS("plan melee")
+Expect("melee plan target for 11", "target 31m 00s")
 print(fails == 0 and "ALL PASS" or fails .. " FAILED")

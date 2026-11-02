@@ -1,18 +1,25 @@
 -- OneClickSplits
 -- A see-through speedrun panel: the target time for your current level,
 -- how long you've spent on it, and whether you're ahead of or behind the
--- plan overall. Two plans for a solo Enhancement Shaman in WoW Forever:
--- "target" (120 hours /played to 60) and "stretch" (100 hours), from the
--- research report "Shaman 1 to 60 speedrun splits".
+-- plan overall. Two speedrun plans, both scaled to verified solo 1-60 runs
+-- on Classic Era (speedrun.com, SSF Softcore), which WoW Forever's XP table
+-- matches:
+--   shaman: 92h 15m, DeepsTheBoomer, Troll Shaman (the only verified
+--           Shaman 1-60 speedrun)
+--   melee:  78h 36m, Thiddi, Troll Rogue (fastest Horde melee solo run)
+-- The runs only publish totals, so the per-level spread comes from the
+-- Classic XP table over an XP-per-hour curve (6k/h at 1 to 55k/h at 60)
+-- with Shaman bracket factors (10-19 slower, 25-39 faster).
 
 local ADDON = ...
 
 -- Minutes for each level, 1 to 59 (level 1 means going from 1 to 2).
 local PLANS = {
-    target = { 5, 4, 10, 7, 12, 21, 21, 35, 40, 48, 53, 56, 60, 65, 70, 75, 80, 84, 89, 79, 83, 87, 90, 94, 93, 97, 100, 104, 108, 108, 112, 115, 120, 124, 128, 132, 136, 140, 145, 169, 173, 178, 182, 187, 192, 196, 201, 205, 209, 204, 208, 212, 217, 221, 225, 229, 234, 262, 266 },
-    stretch = { 3, 3, 9, 5, 11, 20, 21, 30, 34, 40, 44, 46, 50, 54, 58, 62, 66, 70, 75, 66, 69, 72, 75, 79, 78, 81, 83, 86, 90, 90, 93, 96, 100, 103, 107, 110, 114, 117, 120, 140, 144, 148, 152, 156, 159, 163, 167, 171, 174, 170, 173, 177, 180, 184, 187, 191, 194, 218, 222 },
+    shaman = { 3.1, 6.4, 9.1, 12.5, 15.4, 18.5, 21.6, 24.3, 27.6, 32.9, 36.4, 39.9, 43.1, 46.8, 50.2, 53.7, 57.2, 60.5, 64.2, 62.7, 65.6, 68.6, 71.3, 74.3, 73.5, 76.2, 79, 81.6, 84.9, 85.4, 88, 91, 94.4, 97.8, 101, 104.4, 107.5, 110.8, 114.1, 126.7, 130.2, 133.6, 136.9, 140.4, 143.9, 147.2, 150.6, 154, 157.4, 160.8, 164.1, 167.5, 170.9, 174.2, 177.6, 180.9, 184.2, 187.5, 190.9 },
+    melee = { 2.7, 5.4, 7.7, 10.6, 13.1, 15.7, 18.4, 20.7, 23.5, 28.1, 31, 34, 36.7, 39.9, 42.8, 45.7, 48.7, 51.5, 54.7, 53.4, 55.9, 58.4, 60.7, 63.3, 62.6, 65, 67.3, 69.6, 72.3, 72.7, 75, 77.5, 80.4, 83.3, 86.1, 88.9, 91.6, 94.4, 97.2, 108, 110.9, 113.8, 116.7, 119.6, 122.6, 125.4, 128.4, 131.2, 134.1, 137, 139.9, 142.7, 145.6, 148.4, 151.3, 154.2, 156.9, 159.8, 162.7 },
 }
-local PLAN_NAMES = { target = "Target (120h)", stretch = "Stretch (100h)" }
+local PLAN_NAMES = { shaman = "Shaman speedrun (92h)", melee = "Melee record (79h)" }
+local DEFAULT_PLAN = "shaman"
 
 local GREEN, RED, WHITE, GRAY, GOLD = "|cff40ff40", "|cffff5050", "|cffffffff", "|cffb0b0b0", "|cffffd100"
 
@@ -26,7 +33,7 @@ local function Print(msg)
 end
 
 local function Plan()
-    return PLANS[DB.plan or "target"] or PLANS.target
+    return PLANS[DB.plan or DEFAULT_PLAN] or PLANS[DEFAULT_PLAN]
 end
 
 -- Minutes the plan allows before reaching `level` (sum of levels 1..level-1).
@@ -214,6 +221,7 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2)
         OneClickSplitsDB = OneClickSplitsDB or {}
         OneClickSplitsChar = OneClickSplitsChar or {}
         DB, CHAR = OneClickSplitsDB, OneClickSplitsChar
+        if DB.plan and not PLANS[DB.plan] then DB.plan = nil end -- plans from 0.1.0
         return
     end
     if not DB then return end
@@ -250,7 +258,7 @@ SlashCmdList.ONECLICKSPLITS = function(input)
         Print("Plan: " .. PLAN_NAMES[arg])
         Update()
     elseif cmd == "plan" then
-        Print("Plan is " .. PLAN_NAMES[DB.plan or "target"] .. ". Type /splits plan target or /splits plan stretch.")
+        Print("Plan is " .. PLAN_NAMES[PLANS[DB.plan or ""] and DB.plan or DEFAULT_PLAN] .. ". Type /splits plan shaman or /splits plan melee.")
     elseif cmd == "scale" and tonumber(arg or "") then
         DB.scale = math.max(0.5, math.min(3, tonumber(arg)))
         if frame then frame:SetScale(DB.scale) end
@@ -271,7 +279,7 @@ SlashCmdList.ONECLICKSPLITS = function(input)
         end
         if not any then Print("No levels recorded on this character yet.") end
     else
-        Print("/splits (show or hide), /splits plan target|stretch, /splits scale 1.2, "
+        Print("/splits (show or hide), /splits plan shaman|melee, /splits scale 1.2, "
             .. "/splits next (show the next level's target), /splits alert, /splits history")
     end
 end

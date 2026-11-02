@@ -6,7 +6,7 @@ Addons for WoW Forever by CrazyEyez810. Each folder is one addon with its own Cu
 - `OneClickXP/` is an on-screen XP panel with kills to level and time to level.
 - `OneClickPace/` tells you when a quest spot is contested and you should leave and come back later.
 - `OneClickMail/` mails items to your own alts by rules from a One Click tab in the mailbox.
-- `OneClickSplits/` is a see-through speedrun panel with a target time for each level 1-60.
+- `OneClickSplits/` is a see-through speedrun panel with a target time for each level 1-60, scaled to verified solo speedruns.
 - `tools/test-pace.lua` runs OneClickPace against a fake game: `luajit tools/test-pace.lua OneClickPace/OneClickPace.lua`.
 - `tools/test-mail.lua` checks which bag items each OneClickMail rule picks: `luajit tools/test-mail.lua OneClickMail/OneClickMail.lua`.
 - `tools/test-splits.lua` runs OneClickSplits against a fake game: `luajit tools/test-splits.lua OneClickSplits/OneClickSplits.lua`.

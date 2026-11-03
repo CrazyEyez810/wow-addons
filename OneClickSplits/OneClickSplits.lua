@@ -98,6 +98,45 @@ local function MaxLevel()
     return (GetMaxPlayerLevel and GetMaxPlayerLevel()) or 60
 end
 
+-- Time played since reaching `from`, up to reaching `to` (or now when `to`
+-- is the current level). Uses the played time saved at each ding, else the
+-- saved level splits. Nil when the addon missed part of the bracket.
+local function Spent(from, to, level, total, levelTime)
+    local reached = CHAR.reached or {}
+    local finish = to > level and total or reached[to]
+    if reached[from] and finish then return finish - reached[from] end
+    local sum = 0
+    for l = from, math.min(to, level + 1) - 1 do
+        local s = l == level and levelTime or (CHAR.splits and CHAR.splits[l])
+        if not s then return nil end
+        sum = sum + s
+    end
+    return sum
+end
+
+-- One line per bracket: 1-10, 10-20 ... 50-60. Finished brackets are green
+-- (under the goal) or red (over); the current one is white until it passes
+-- its goal; later ones show only the goal.
+local function BracketLines(level, total, levelTime)
+    local lines = {}
+    for to = 10, 60, 10 do
+        local from = to == 10 and 1 or to - 10
+        local goal = (PlanBefore(to) - PlanBefore(from)) * 60
+        local label = ("%d-%d"):format(from, to)
+        if level < from then
+            lines[#lines + 1] = ("%s%s  goal %s"):format(GRAY, label, FormatTime(goal))
+        else
+            local spent = Spent(from, to, level, total, levelTime)
+            local done = level >= to
+            local color = spent and spent > goal and RED or (done and GREEN or WHITE)
+            local line = ("%s%s  %sgoal %s%s"):format(done and GRAY or GOLD, label, GRAY, WHITE, FormatTime(goal))
+            if spent then line = line .. ("  %syou %s%s"):format(GRAY, color, FormatTime(spent)) end
+            lines[#lines + 1] = line
+        end
+    end
+    return lines
+end
+
 -- Panel ----------------------------------------------------------------------
 
 -- Returns the goal line, the timer next to it, and the lines below.
@@ -126,6 +165,9 @@ local function Lines()
 
     if DB.showNext ~= false and plan[level + 1] then
         lines[#lines + 1] = ("%sNext: %d in %s"):format(GRAY, level + 1, Clock(plan[level + 1] * 60))
+    end
+    if DB.showBrackets ~= false then
+        for _, line in ipairs(BracketLines(level, total, levelTime)) do lines[#lines + 1] = line end
     end
     return goal, timer, lines
 end
@@ -209,6 +251,8 @@ local function OnDing(newLevel)
         local target = Plan()[doneLevel] * 60
         CHAR.splits = CHAR.splits or {}
         CHAR.splits[doneLevel] = math.floor(levelTime + 0.5)
+        CHAR.reached = CHAR.reached or {}
+        CHAR.reached[newLevel] = math.floor(total + 0.5)
         local diff = levelTime - target
         local verdict = math.abs(diff) < 30 and "on target"
             or (diff < 0 and (FormatTime(diff) .. " under target") or (FormatTime(diff) .. " over target"))
@@ -241,6 +285,9 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2)
         OneClickSplitsChar = OneClickSplitsChar or {}
         DB, CHAR = OneClickSplitsDB, OneClickSplitsChar
         if DB.plan and not PLANS[DB.plan] then DB.plan = nil end -- plans from 0.1.0
+        -- Played time when each level was reached; level 1 starts at zero.
+        CHAR.reached = CHAR.reached or {}
+        CHAR.reached[1] = 0
         return
     end
     if not DB then return end
@@ -254,6 +301,8 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2)
         Update()
     elseif event == "TIME_PLAYED_MSG" then
         played.total, played.level, played.at = arg1, arg2, GetTime()
+        local level = UnitLevel("player")
+        if not CHAR.reached[level] then CHAR.reached[level] = math.floor(arg1 - arg2 + 0.5) end
         Update()
     elseif event == "PLAYER_LEVEL_UP" then
         OnDing(arg1)
@@ -284,6 +333,9 @@ SlashCmdList.ONECLICKSPLITS = function(input)
     elseif cmd == "next" then
         DB.showNext = DB.showNext == false
         Update()
+    elseif cmd == "brackets" then
+        DB.showBrackets = DB.showBrackets == false
+        Update()
     elseif cmd == "alert" then
         DB.dingAlert = DB.dingAlert == false
         Print("Level-up message on screen: " .. (DB.dingAlert ~= false and "on" or "off"))
@@ -299,6 +351,7 @@ SlashCmdList.ONECLICKSPLITS = function(input)
         if not any then Print("No levels recorded on this character yet.") end
     else
         Print("/splits (show or hide), /splits plan shaman|melee, /splits scale 1.2, "
-            .. "/splits next (show the next level's target), /splits alert, /splits history")
+            .. "/splits next (show the next level's target), /splits brackets (1-10, 10-20 ...), "
+            .. "/splits alert, /splits history")
     end
 end

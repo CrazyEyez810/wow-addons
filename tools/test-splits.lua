@@ -49,6 +49,9 @@ Expect("before time played", "Reading time played")
 -- Level 10 on the Shaman plan: 32.9 min target; plan time before 10 = 138.5 min.
 Fire("TIME_PLAYED_MSG", 138.5 * 60, 0)
 Expect("start of level 10, on plan", "on pace")
+Expect("1-10 bracket done on its goal", "1-10  goal 2h 18m  you 2h 18m")
+Expect("10-20 bracket starts", "10-20  goal 8h 04m  you 0s")
+Expect("later brackets show the goal", "50-60  goal")
 now = now + 20 * 60; xp = 7600 * 0.25   -- 20 min in, 25% done: plan expects 8.2 min
 Fire("PLAYER_XP_UPDATE")
 Expect("slow first 20 minutes", "11m 47s behind")
@@ -70,4 +73,7 @@ now = now + 35 * 60
 Fire("PLAYER_XP_UPDATE")
 Expect("over the goal keeps counting", "goal 31:00 | 35:00")
 if not texts[order[2]]:find("^|cffff5050") then fails = fails + 1 print("FAIL timer not red over the goal") else print("PASS timer is red over the goal") end
+Expect("10-20 counts the levels so far", "10-20  goal 6h 53m  you 1h 05m")
+SlashCmdList.ONECLICKSPLITS("brackets")
+if Plain():find("10-20", 1, true) then fails = fails + 1 print("FAIL brackets still shown") else print("PASS brackets hidden") end
 print(fails == 0 and "ALL PASS" or fails .. " FAILED")

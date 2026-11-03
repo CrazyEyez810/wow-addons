@@ -1,7 +1,8 @@
 -- OneClickSplits
 -- A see-through speedrun panel: the target time for your current level,
 -- how long you've spent on it, and whether you're ahead of or behind the
--- plan overall. Two speedrun plans, both scaled to verified solo 1-60 runs
+-- plan overall. The default plan is 100 hours: the Shaman speedrun below
+-- stretched by 8%. Two speedrun plans, both scaled to verified solo 1-60 runs
 -- on Classic Era (speedrun.com, SSF Softcore), which WoW Forever's XP table
 -- matches:
 --   shaman: 92h 15m, DeepsTheBoomer, Troll Shaman (the only verified
@@ -15,11 +16,12 @@ local ADDON = ...
 
 -- Minutes for each level, 1 to 59 (level 1 means going from 1 to 2).
 local PLANS = {
+    ["100"] = { 3.4, 6.9, 9.9, 13.6, 16.7, 20.1, 23.4, 26.3, 29.9, 35.7, 39.5, 43.3, 46.7, 50.7, 54.4, 58.2, 62, 65.6, 69.6, 68, 71.1, 74.4, 77.3, 80.5, 79.7, 82.6, 85.6, 88.5, 92, 92.6, 95.4, 98.6, 102.3, 106, 109.5, 113.2, 116.5, 120.1, 123.7, 137.3, 141.1, 144.8, 148.4, 152.2, 156, 159.6, 163.3, 166.9, 170.6, 174.3, 177.9, 181.6, 185.3, 188.8, 192.5, 196.1, 199.7, 203.3, 206.9 },
     shaman = { 3.1, 6.4, 9.1, 12.5, 15.4, 18.5, 21.6, 24.3, 27.6, 32.9, 36.4, 39.9, 43.1, 46.8, 50.2, 53.7, 57.2, 60.5, 64.2, 62.7, 65.6, 68.6, 71.3, 74.3, 73.5, 76.2, 79, 81.6, 84.9, 85.4, 88, 91, 94.4, 97.8, 101, 104.4, 107.5, 110.8, 114.1, 126.7, 130.2, 133.6, 136.9, 140.4, 143.9, 147.2, 150.6, 154, 157.4, 160.8, 164.1, 167.5, 170.9, 174.2, 177.6, 180.9, 184.2, 187.5, 190.9 },
     melee = { 2.7, 5.4, 7.7, 10.6, 13.1, 15.7, 18.4, 20.7, 23.5, 28.1, 31, 34, 36.7, 39.9, 42.8, 45.7, 48.7, 51.5, 54.7, 53.4, 55.9, 58.4, 60.7, 63.3, 62.6, 65, 67.3, 69.6, 72.3, 72.7, 75, 77.5, 80.4, 83.3, 86.1, 88.9, 91.6, 94.4, 97.2, 108, 110.9, 113.8, 116.7, 119.6, 122.6, 125.4, 128.4, 131.2, 134.1, 137, 139.9, 142.7, 145.6, 148.4, 151.3, 154.2, 156.9, 159.8, 162.7 },
 }
-local PLAN_NAMES = { shaman = "Shaman speedrun (92h)", melee = "Melee record (79h)" }
-local DEFAULT_PLAN = "shaman"
+local PLAN_NAMES = { ["100"] = "100 hours", shaman = "Shaman speedrun (92h)", melee = "Melee record (79h)" }
+local DEFAULT_PLAN = "100"
 
 local GREEN, RED, WHITE, GRAY, GOLD = "|cff40ff40", "|cffff5050", "|cffffffff", "|cffb0b0b0", "|cffffd100"
 
@@ -326,7 +328,7 @@ SlashCmdList.ONECLICKSPLITS = function(input)
         Print("Plan: " .. PLAN_NAMES[arg])
         Update()
     elseif cmd == "plan" then
-        Print("Plan is " .. PLAN_NAMES[PLANS[DB.plan or ""] and DB.plan or DEFAULT_PLAN] .. ". Type /splits plan shaman or /splits plan melee.")
+        Print("Plan is " .. PLAN_NAMES[PLANS[DB.plan or ""] and DB.plan or DEFAULT_PLAN] .. ". Type /splits plan 100, /splits plan shaman or /splits plan melee.")
     elseif cmd == "scale" and tonumber(arg or "") then
         DB.scale = math.max(0.5, math.min(3, tonumber(arg)))
         if frame then frame:SetScale(DB.scale) end
@@ -350,7 +352,7 @@ SlashCmdList.ONECLICKSPLITS = function(input)
         end
         if not any then Print("No levels recorded on this character yet.") end
     else
-        Print("/splits (show or hide), /splits plan shaman|melee, /splits scale 1.2, "
+        Print("/splits (show or hide), /splits plan 100|shaman|melee, /splits scale 1.2, "
             .. "/splits next (show the next level's target), /splits brackets (1-10, 10-20 ...), "
             .. "/splits alert, /splits history")
     end

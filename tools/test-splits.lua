@@ -45,6 +45,8 @@ local function Expect(label, want)
 end
 Fire("ADDON_LOADED", "OneClickSplits")
 Fire("PLAYER_ENTERING_WORLD")
+Expect("100-hour plan is the default", "goal 35:42")
+SlashCmdList.ONECLICKSPLITS("plan shaman")
 Expect("before time played", "Reading time played")
 -- Level 10 on the Shaman plan: 32.9 min target; plan time before 10 = 138.5 min.
 Fire("TIME_PLAYED_MSG", 138.5 * 60, 0)

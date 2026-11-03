@@ -9,9 +9,11 @@ A see-through speedrun panel for leveling 1 to 60 in WoW Forever. It shows:
 
 On every level-up it says how that level went against its target, in chat and on screen.
 
+The default plan is 100 hours: the Shaman speedrun plan below with every level 8% longer. Bracket goals: 1-10 in 2h 30m, 10-20 in 8h 45m, 20-30 in 13h 19m, 30-40 in 17h 58m, 40-50 in 25h 39m, 50-60 in 31h 46m.
+
 Two speedrun plans, each scaled to a verified solo 1-60 run on Classic Era (speedrun.com, SSF Softcore). WoW Forever uses the same XP table.
 
-- shaman (default): 92 hours 15 minutes, the pace of the only verified Shaman 1-60 speedrun (DeepsTheBoomer, Troll Shaman). Dings 10 at 2.3 h, 20 at 10.4 h, 30 at 22.7 h, 40 at 39.3 h, 50 at 62.9 h.
+- shaman: 92 hours 15 minutes, the pace of the only verified Shaman 1-60 speedrun (DeepsTheBoomer, Troll Shaman). Dings 10 at 2.3 h, 20 at 10.4 h, 30 at 22.7 h, 40 at 39.3 h, 50 at 62.9 h.
 - melee: 78 hours 36 minutes, the fastest verified Horde melee solo run (Thiddi, Troll Rogue). Dings 20 at 8.8 h, 30 at 19.3 h, 40 at 33.4 h, 50 at 53.6 h.
 
 The runs publish only their totals, so the time for each level comes from the Classic XP table over an XP-per-hour curve, with Shaman adjustments (levels 10-19 slower, 25-39 faster).
@@ -21,7 +23,7 @@ Time played is read once at login without printing it in chat, then counted forw
 ## Commands
 
 - `/splits` shows or hides the panel
-- `/splits plan shaman` or `/splits plan melee`
+- `/splits plan 100`, `/splits plan shaman` or `/splits plan melee`
 - `/splits scale 1.2` resizes it
 - `/splits next` hides or shows the next level's target
 - `/splits brackets` hides or shows the bracket list

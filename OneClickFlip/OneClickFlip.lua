@@ -27,6 +27,13 @@
 --      sell price if that is lower. The margin is checked again with it.
 -- An item listed under its vendor price is always shown: that profit is
 -- certain.
+--
+-- Two more guards, added after a recipe flip went wrong:
+--   - Auction flips are only suggested for trade goods (ore, herbs, cloth,
+--     leather and so on). They sell every day; recipes and gear can sit for
+--     weeks. /flip all turns this off, /flip trade turns it back on.
+--   - An item you already hold in your bags is never suggested again, so
+--     scanning again cannot put more gold into the same item.
 
 local ADDON = ...
 
@@ -38,6 +45,7 @@ local DEFAULTS = {
     minSoldPerDay = 1,   -- TSM region sold per day
     minProfit = 500,     -- copper; smaller flips are not shown
     capDays = 1,         -- buy at most this many days of TSM's sold per day
+    tradeOnly = true,    -- auction flips only for trade goods (ore, herbs, cloth, ...)
 }
 
 local MAX_CHECK = 15       -- candidates searched one by one after the browse scan
@@ -160,6 +168,15 @@ function Flip.Vendor(id)
     return nil
 end
 
+-- Trade goods: the item class of ore, herbs, cloth, leather, gems and other
+-- crafting materials.
+function Flip.IsTrade(id)
+    local get = C_Item and C_Item.GetItemInfoInstant
+    if not get then return false end
+    local _, _, _, _, _, classID = get(id)
+    return classID == (Enum.ItemClass and Enum.ItemClass.Tradegoods or 7)
+end
+
 -- The most to pay per unit so the minimum margin is left after the cut.
 function Flip.MaxBuy(sell)
     return math.floor(sell * (1 - S.cut) / (1 + S.minMargin))
@@ -252,6 +269,30 @@ function Flip.SellPlan(count, info, livePrice, vendor, sells)
         return { kind = "vendor", price = vendor, total = vendor * count }
     end
     return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Bags
+-- ---------------------------------------------------------------------------
+
+-- The unbound items in your bags, one entry per item.
+local function BagItems()
+    local items = {}
+    for bag = 0, (_G.NUM_BAG_SLOTS or 4) do
+        for slot = 1, C_Container.GetContainerNumSlots(bag) or 0 do
+            local it = C_Container.GetContainerItemInfo(bag, slot)
+            if it and it.itemID and not it.isBound and not NEVER_SELL[it.itemID] then
+                local e = items[it.itemID]
+                if not e then
+                    e = { id = it.itemID, count = 0, icon = it.iconFileID, quality = it.quality,
+                        name = it.hyperlink and it.hyperlink:match("%[(.-)%]") or ("item " .. it.itemID) }
+                    items[it.itemID] = e
+                end
+                e.count = e.count + (it.stackCount or 1)
+            end
+        end
+    end
+    return items
 end
 
 -- ---------------------------------------------------------------------------
@@ -405,20 +446,23 @@ local function RunScan()
     Status("Pricing " .. total .. " items...")
     local gold = GetMoney()
     local perItem = math.floor(gold * S.maxShare)
+    local held = BagItems()
     local cands, priced, done = {}, 0, 0
     for id, e in pairs(live) do
-        if not e.mine then
+        -- Not what you already sell, and not what you already hold.
+        if not e.mine and not held[id] then
             local info, vendor = Flip.Info(id), Flip.Vendor(id)
             if info.sell then priced = priced + 1 end
+            local ah = not S.tradeOnly or Flip.IsTrade(id)
             local unit, weight
-            if info.sell and e.price <= Flip.MaxBuy(info.sell) and Flip.Sells(info, e.qty) then
+            if ah and info.sell and e.price <= Flip.MaxBuy(info.sell) and Flip.Sells(info, e.qty) then
                 unit, weight = info.sell * (1 - S.cut) - e.price, info.saleRate or 0.2
             elseif vendor and e.price < vendor then
                 unit, weight = vendor - e.price, 1
             end
             local n = math.min(e.qty, math.floor(perItem / e.price))
             if unit and n >= 1 then
-                cands[#cands + 1] = { id = id, e = e, info = info, vendor = vendor, est = unit * n * weight }
+                cands[#cands + 1] = { id = id, e = e, info = info, vendor = vendor, ah = ah, est = unit * n * weight }
             end
         end
         done = done + 1
@@ -434,7 +478,8 @@ local function RunScan()
         local listings, complete
         if keyInfo then listings, complete = ReadListings(c.e.key, keyInfo) end
         if listings then
-            local plan = Flip.Plan(listings, complete, c.info, c.vendor, perItem)
+            -- Without c.ah only the vendor flip is judged.
+            local plan = Flip.Plan(listings, complete, c.ah and c.info or {}, c.vendor, perItem)
             if plan then
                 plan.id, plan.key, plan.info, plan.vendor = c.id, c.e.key, c.info, c.vendor
                 plan.name, plan.icon, plan.listed = keyInfo.itemName or ("item " .. c.id), keyInfo.iconFileID, c.e.qty
@@ -489,27 +534,9 @@ StepScan = function()
     end
 end
 
--- ---------------------------------------------------------------------------
--- Bags
--- ---------------------------------------------------------------------------
-
 -- What is in your bags: rows worth posting (best first) and the vendor total.
 local function BagAdvice()
-    local items = {}
-    for bag = 0, (_G.NUM_BAG_SLOTS or 4) do
-        for slot = 1, C_Container.GetContainerNumSlots(bag) or 0 do
-            local it = C_Container.GetContainerItemInfo(bag, slot)
-            if it and it.itemID and not it.isBound and not NEVER_SELL[it.itemID] then
-                local e = items[it.itemID]
-                if not e then
-                    e = { id = it.itemID, count = 0, icon = it.iconFileID, quality = it.quality,
-                        name = it.hyperlink and it.hyperlink:match("%[(.-)%]") or ("item " .. it.itemID) }
-                    items[it.itemID] = e
-                end
-                e.count = e.count + (it.stackCount or 1)
-            end
-        end
-    end
+    local items = BagItems()
     local fresh = liveTime and time() - liveTime <= LIVE_MAX_AGE
     local rows, vendorCount, vendorTotal = {}, 0, 0
     for id, e in pairs(items) do
@@ -731,6 +758,7 @@ Render = function()
         status = "Prices are " .. math.floor((time() - liveTime) / 60) .. " minutes old. Scan again before buying."
     end
     panel.status:SetText(status)
+    panel.buyHeader:SetText(S.tradeOnly and "Buy: trade goods only (click a row to open it)" or "Buy: every kind of item (click a row to open it)")
     if scan then panel.scan:Disable() else panel.scan:Enable() end
 
     for i, row in ipairs(panel.buyRows) do
@@ -798,13 +826,18 @@ local function Slash(msg)
         Percent(msg, "minMargin", "Least profit on what you pay")
     elseif msg:find("^share") then
         Percent(msg, "maxShare", "Most of your gold for one item")
+    elseif msg == "all" or msg == "trade" then
+        DB.settings.tradeOnly = msg == "trade"
+        Print(msg == "trade" and "Auction flips are suggested for trade goods only."
+            or "Auction flips are suggested for every kind of item. Recipes and gear can take weeks to sell.")
+        if Render then Render() end
     elseif msg == "scan" then
         ShowPanel()
         StartScan()
     elseif msg == "" then
         if panel and panel:IsShown() then panel:Hide() else ShowPanel() end
     else
-        Print("/flip shows or hides the window. /flip scan, /flip margin 30, /flip share 25.")
+        Print("/flip shows or hides the window. /flip scan, /flip margin 30, /flip share 25, /flip trade, /flip all.")
     end
 end
 

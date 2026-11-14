@@ -104,9 +104,8 @@ C_AuctionHouse = {
   HasFullItemSearchResults = function() return true end,
 }
 
+local ore = { itemID = 2770, stackCount = 20, quality = 1, hyperlink = "|Hitem:2770|h[Copper Ore]|h" }
 local bags = {
-  { itemID = 2770, stackCount = 20, quality = 1, hyperlink = "|Hitem:2770|h[Copper Ore]|h" },
-  { itemID = 2770, stackCount = 20, quality = 1, hyperlink = "|Hitem:2770|h[Copper Ore]|h" },
   { itemID = 2447, stackCount = 10, quality = 1, hyperlink = "|Hitem:2447|h[Peacebloom]|h" },
   { itemID = 7, stackCount = 3, quality = 0, hyperlink = "|Hitem:7|h[Broken Fang]|h" },
   { itemID = 2318, stackCount = 5, quality = 1, hyperlink = "|Hitem:2318|h[Light Leather]|h" },
@@ -119,7 +118,11 @@ C_Container = {
   GetContainerItemInfo = function(bag, slot) return bag == 0 and bags[slot] or nil end,
 }
 local vendorPrices = { [2318] = 15, [8] = 5000 }
-C_Item = { GetItemInfo = function(id) return "x", nil, 1, 1, 1, "", "", 1, "", 1, vendorPrices[id] or 0 end }
+local notTrade = { [5000] = 9, [9999] = 4, [7] = 15, [8] = 2, [9] = 4, [6948] = 15 } -- recipe, armor, junk, weapon
+C_Item = {
+  GetItemInfo = function(id) return "x", nil, 1, 1, 1, "", "", 1, "", 1, vendorPrices[id] or 0 end,
+  GetItemInfoInstant = function(id) return id, "", "", "", 1, notTrade[id] or 7 end,
+}
 
 -- Load the addon --------------------------------------------------------------
 assert(loadfile(arg[1]))("OneClickFlip")
@@ -191,15 +194,17 @@ local function row(list, i)
   if not r.shown then return "" end
   return plain(r.top.text) .. " | +" .. plain(r.profit.text):gsub("^%+", "") .. " | " .. plain(r.bottom.text)
 end
-for i = 1, 5 do if row("buyRows", i) ~= "" then print("     buy " .. i .. ": " .. row("buyRows", i)) end end
-check("best flip is the single cheap recipe", row("buyRows", 1),
-  "Buy 1 Recipe: Thing | +2g 55s 99c | Pay up to 2g each (2g). Relist at 4g 79s 99c each, sells steadily.")
-check("then the stone under vendor price", row("buyRows", 2),
+local function showBuys() for i = 1, 5 do if row("buyRows", i) ~= "" then print("     buy " .. i .. ": " .. row("buyRows", i)) end end end
+showBuys()
+check("the stone under vendor price comes first: that profit is certain", row("buyRows", 1),
   "Buy 100 Rough Stone | +10s | Pay up to 5c each (5s). A vendor pays 15c each.")
-check("then the ore, relisted under the next listing", row("buyRows", 3),
+check("then the ore, relisted under the next listing", row("buyRows", 2),
   "Buy 20 Copper Ore | +9s 86c | Pay up to 40c each (8s). Relist at 94c each, sells fast.")
-check("nothing else: wall, slow seller, own item, thin margin, partial results, gear endings", row("buyRows", 4), "")
+check("nothing else: recipe, wall, slow seller, own item, thin margin, partial results, gear endings", row("buyRows", 3), "")
 
+-- You bought the ore: it moves to the sell list and is not suggested again.
+bags[#bags + 1], bags[#bags + 2] = ore, ore
+OnEvent(events, "BAG_UPDATE_DELAYED")
 for i = 1, 6 do if row("sellRows", i) ~= "" then print("     sell " .. i .. ": " .. row("sellRows", i)) end end
 check("post the ore at its usual price, not under the mispriced one", row("sellRows", 1),
   "Post 40 Copper Ore | +38s | At 1s each: its usual price.")
@@ -208,11 +213,20 @@ check("your own listing is not undercut", row("sellRows", 2),
 check("only those two are worth posting", row("sellRows", 3), "")
 check("gray item and the leather that never sells go to a vendor; the rare is left alone",
   plain(panel.vendor.text), "Sell the rest to a vendor: 2 items for 1s 50c.")
+runScan()
+check("ore you already hold is not suggested again", row("buyRows", 2), "")
 
--- Less gold: the recipe no longer fits a quarter of it.
+-- /flip all: recipes and gear are judged too.
+SlashCmdList.ONECLICKFLIP("all")
+runScan()
+showBuys()
+check("with /flip all the single cheap recipe is the best flip", row("buyRows", 1),
+  "Buy 1 Recipe: Thing | +2g 55s 99c | Pay up to 2g each (2g). Relist at 4g 79s 99c each, sells steadily.")
 gold = 40000
 runScan()
 check("with 4g the 2g recipe is over the per-item limit", row("buyRows", 1):match("^Buy %d+ %a+ %a+"), "Buy 100 Rough Stone")
+SlashCmdList.ONECLICKFLIP("trade")
+check("/flip trade is saved", OneClickFlipDB.settings.tradeOnly, true)
 
 -- Closing the auction house stops a scan.
 SlashCmdList.ONECLICKFLIP("scan")
@@ -225,6 +239,7 @@ check("closing the auction house stops the scan", events.scripts.OnUpdate, nil)
 -- lows are 40c (the scans above), 1s, 1s, 1s, then 40c again today.
 TSM_API = nil
 gold = 130000
+table.remove(bags) table.remove(bags) -- the ore is sold
 OnEvent(events, "AUCTION_HOUSE_SHOW")
 for d = 1, 4 do
   now = now + 86400

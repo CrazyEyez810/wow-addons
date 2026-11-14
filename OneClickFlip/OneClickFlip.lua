@@ -34,6 +34,20 @@
 --     weeks. /flip all turns this off, /flip trade turns it back on.
 --   - An item you already hold in your bags is never suggested again, so
 --     scanning again cannot put more gold into the same item.
+--
+-- The market window (/flip market) is for working one item at a time:
+--   - Every scan records, for each trade good and each hour of the day (your
+--     clock), the cheapest price and how many units are listed. The window
+--     draws that as 24 bars and names the cheapest and dearest hours. It
+--     needs scans at many hours on at least two days before it says anything.
+--   - Watched items (up to 10) have every listing read each time the auction
+--     house opens, so their hours fill in without a full scan.
+--   - Cornering: for a watched item it tries buying every unit up to each
+--     price step, relisting just under the next listing left (never above
+--     1.25 times the usual price), and keeps the step with the most profit
+--     that fits the per-item budget, keeps the minimum margin and sells
+--     within 7 days at TSM's pace.
+--   - A full scan also suggests up to 4 trade goods worth watching.
 
 local ADDON = ...
 
@@ -46,6 +60,7 @@ local DEFAULTS = {
     minProfit = 500,     -- copper; smaller flips are not shown
     capDays = 1,         -- buy at most this many days of TSM's sold per day
     tradeOnly = true,    -- auction flips only for trade goods (ore, herbs, cloth, ...)
+    scale = 1,           -- window size
 }
 
 local MAX_CHECK = 15       -- candidates searched one by one after the browse scan
@@ -54,10 +69,19 @@ local HISTORY_DAYS = 14
 local TIMEOUT = 10         -- seconds to wait for the auction house to answer
 local LIVE_MAX_AGE = 1800  -- seconds a scan's prices count as current
 local NEVER_SELL = { [6948] = true } -- Hearthstone
+local MAX_WATCH = 10
+local CORNER_DAYS = 7      -- a corner must sell within this many days of TSM's sold per day
+local CORNER_CAP = 1.25    -- never relist above this times the usual price
+local HOUR_MIN_DAYS = 2    -- days an hour must be seen before it counts
+local HOUR_MIN_COUNT = 4   -- hours that must count before naming the best ones
+local SUGGEST_ROWS, SUGGEST_CHECK = 4, 6
 
 local DB, S
 local Flip = {}            -- the pricing logic; tools/test-flip.lua checks it
-local panel
+local panel, market
+local watchLive = {}       -- itemID -> { listings, complete, sellers, time, icon } for watched items
+local suggestions = {}     -- corner ideas from the last full scan
+local auctionOpen = false
 local scan                 -- the running scan: { co, wait, got, dropped }
 local live = {}            -- itemID -> { price, qty, key } from the last scan
 local liveTime             -- time() of the last finished scan
@@ -84,8 +108,19 @@ end
 local function Realm()
     local key = (GetRealmName() or "?") .. "-" .. (UnitFactionGroup("player") or "?")
     DB.realms = DB.realms or {}
-    DB.realms[key] = DB.realms[key] or { history = {} }
-    return DB.realms[key]
+    local r = DB.realms[key] or { history = {} }
+    DB.realms[key] = r
+    r.hours = r.hours or {}  -- itemID -> [hour + 1] = bucket (see Flip.RecordHour)
+    r.watch = r.watch or {}  -- itemID -> name
+    return r
+end
+
+local function Today() return math.floor(time() / 86400) end
+local function Hour() return date("*t").hour end
+
+local function HourName(h)
+    local n = h % 12
+    return (n == 0 and 12 or n) .. (h < 12 and " AM" or " PM")
 end
 
 -- ---------------------------------------------------------------------------
@@ -272,6 +307,131 @@ function Flip.SellPlan(count, info, livePrice, vendor, sells)
 end
 
 -- ---------------------------------------------------------------------------
+-- Prices by hour of day
+-- ---------------------------------------------------------------------------
+
+-- One bucket per item and hour: { avgPrice, avgQty, days, lastDay, dayPrice, dayQty }.
+-- Within a day the cheapest price and the latest quantity are kept; when a
+-- new day starts that day is folded into the averages. The averages weigh
+-- every day equally for the first five days, then lean on the recent ones.
+local function Fold(b)
+    local n = b[3]
+    if n == 0 then return b[5], b[6], 1 end
+    local a = math.max(1 / (n + 1), 0.2)
+    return b[1] + a * (b[5] - b[1]), b[2] + a * (b[6] - b[2]), n + 1
+end
+
+function Flip.RecordHour(hours, id, hour, price, qty, day)
+    local t = hours[id]
+    if not t then t = {} hours[id] = t end
+    local b = t[hour + 1]
+    if not b then
+        t[hour + 1] = { 0, 0, 0, day, price, qty }
+    elseif b[4] == day then
+        if price < b[5] then b[5] = price end
+        b[6] = qty
+    else
+        b[1], b[2], b[3] = Fold(b)
+        b[4], b[5], b[6] = day, price, qty
+    end
+end
+
+-- The usual cheapest price and units listed at an hour, and on how many days.
+function Flip.HourValue(b)
+    local p, q, n = Fold(b)
+    return math.floor(p + 0.5), math.floor(q + 0.5), n
+end
+
+-- Drops hours not seen for two weeks.
+function Flip.PruneHours(hours, day)
+    for id, t in pairs(hours) do
+        for h, b in pairs(t) do
+            if b[4] <= day - HISTORY_DAYS then t[h] = nil end
+        end
+        if next(t) == nil then hours[id] = nil end
+    end
+end
+
+-- Every hour's values (vals[0..23]) and, once enough hours have been seen on
+-- two days, the cheapest and dearest hours and the gap between them after
+-- the cut.
+function Flip.BestHours(t)
+    local r = { vals = {}, covered = 0, ready = 0 }
+    for h = 0, 23 do
+        local b = t and t[h + 1]
+        if b then
+            local p, q, n = Flip.HourValue(b)
+            r.vals[h] = { p = p, q = q, n = n }
+            r.covered = r.covered + 1
+            if n >= HOUR_MIN_DAYS then
+                r.ready = r.ready + 1
+                if not r.buyHour or p < r.vals[r.buyHour].p then r.buyHour = h end
+                if not r.sellHour or p > r.vals[r.sellHour].p then r.sellHour = h end
+            end
+        end
+    end
+    if r.ready < HOUR_MIN_COUNT then
+        r.buyHour, r.sellHour = nil, nil
+    else
+        r.buyPrice, r.sellPrice = r.vals[r.buyHour].p, r.vals[r.sellHour].p
+        r.gap = (r.sellPrice * (1 - S.cut) - r.buyPrice) / r.buyPrice
+    end
+    return r
+end
+
+-- ---------------------------------------------------------------------------
+-- Cornering
+-- ---------------------------------------------------------------------------
+
+-- Buying every unit listed up to a price, then relisting all of it just
+-- under the next listing left (never above CORNER_CAP times the usual
+-- price). Each price step is tried; the one with the most profit is kept if
+-- it fits the budget, keeps the minimum margin and sells within CORNER_DAYS
+-- of TSM's sold per day. Your own listings are neither bought nor undercut.
+-- Returns the plan or nil and why not; the third value always holds what
+-- is listed in total (allQty, allCost).
+function Flip.Corner(listings, complete, info, budget)
+    local others, total = {}, { allQty = 0, allCost = 0 }
+    for _, l in ipairs(listings) do
+        if not l.mine then
+            others[#others + 1] = l
+            total.allQty, total.allCost = total.allQty + l.qty, total.allCost + l.qty * l.price
+        end
+    end
+    if #others == 0 then return nil, "gone", total end
+    local ref = info.sell
+    if not ref then return nil, "nodata", total end
+    local cap = math.floor(ref * CORNER_CAP)
+    local spd = info.soldPerDay and info.soldPerDay > 0 and info.soldPerDay or nil
+    local qty, cost, best, why = 0, 0, nil, "thin"
+    for i, l in ipairs(others) do
+        if cost + l.qty * l.price > budget then
+            if i == 1 then why = "over" end
+            break
+        end
+        local nextL = others[i + 1]
+        if not nextL and not complete then break end -- more listings were not read
+        qty, cost = qty + l.qty, cost + l.qty * l.price
+        local days = spd and qty / spd
+        if days and days > CORNER_DAYS then
+            if not best then why = "slow" end
+            break
+        end
+        local relist = cap
+        if nextL and nextL.price - 1 < relist then relist = nextL.price - 1 end
+        local profit = math.floor(qty * relist * (1 - S.cut)) - cost
+        if relist > l.price and profit >= S.minProfit and profit / cost >= S.minMargin
+            and (not best or profit > best.profit) then
+            best = { qty = qty, cost = cost, upTo = l.price, relist = relist, profit = profit,
+                margin = profit / cost, days = days }
+        end
+    end
+    if not best then return nil, why, total end
+    best.allQty, best.allCost = total.allQty, total.allCost
+    return best, nil, total
+end
+
+-- ---------------------------------------------------------------------------
 -- Bags
 -- ---------------------------------------------------------------------------
 
@@ -307,11 +467,12 @@ local BROWSE_EVENTS = {
 local COMMODITY_EVENTS = { COMMODITY_SEARCH_RESULTS_UPDATED = true, COMMODITY_SEARCH_RESULTS_ADDED = true }
 local ITEM_EVENTS = { ITEM_SEARCH_RESULTS_UPDATED = true, ITEM_SEARCH_RESULTS_ADDED = true }
 
-local Render -- defined with the window
+local Render, RenderMarket -- defined with the windows
 
 local function Status(text)
     statusText = text
     if Render then Render() end
+    if RenderMarket then RenderMarket() end
 end
 
 -- Sends one request when the auction house is ready for it and waits for
@@ -366,9 +527,24 @@ local function KeyInfo(key)
     return info
 end
 
--- One item's listings, cheapest first, and whether that is all of them.
+-- Counts the sellers named in a search result. Returns the new count and
+-- whether some sellers were left unnamed.
+local function AddOwners(r, seen, count, partial)
+    if type(r.owners) == "table" then
+        for _, o in ipairs(r.owners) do
+            if not seen[o] then seen[o], count = true, count + 1 end
+        end
+        if r.totalNumberOfOwners and r.totalNumberOfOwners > #r.owners then partial = true end
+    end
+    return count, partial
+end
+
+-- One item's listings, cheapest first, whether that is all of them, and
+-- how many sellers (nil if the client does not say; a string ending in "+"
+-- when some were not named).
 local function ReadListings(key, keyInfo)
     local id, listings = key.itemID, {}
+    local seen, sellers, partial = {}, 0, false
     local sorts = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
     local function send() C_AuctionHouse.SendSearchQuery(key, sorts, true) end
     local complete
@@ -382,6 +558,7 @@ local function ReadListings(key, keyInfo)
             local r = C_AuctionHouse.GetCommoditySearchResultInfo(id, i)
             if r and r.unitPrice and r.unitPrice > 0 then
                 listings[#listings + 1] = { price = r.unitPrice, qty = r.quantity or 1, mine = r.containsOwnerItem }
+                sellers, partial = AddOwners(r, seen, sellers, partial)
             end
         end
         complete = C_AuctionHouse.HasFullCommoditySearchResults(id)
@@ -397,12 +574,42 @@ local function ReadListings(key, keyInfo)
             if r and r.buyoutAmount and r.buyoutAmount > 0 then
                 local qty = r.quantity or 1
                 listings[#listings + 1] = { price = math.floor(r.buyoutAmount / qty), qty = qty, mine = r.containsOwnerItem }
+                sellers, partial = AddOwners(r, seen, sellers, partial)
             end
         end
         complete = C_AuctionHouse.HasFullItemSearchResults(key)
     end
     table.sort(listings, function(a, b) return a.price < b.price end)
-    return listings, complete
+    local who = sellers > 0 and (partial and sellers .. "+" or tostring(sellers)) or nil
+    return listings, complete, who
+end
+
+-- Reads every listing of the watched items and records their hour.
+local function ReadWatched()
+    local realm, ids = Realm(), {}
+    for id in pairs(realm.watch) do ids[#ids + 1] = id end
+    table.sort(ids)
+    local day, hour = Today(), Hour()
+    for i, id in ipairs(ids) do
+        Status("Reading watched item " .. i .. " of " .. #ids .. "...")
+        local key = C_AuctionHouse.MakeItemKey and C_AuctionHouse.MakeItemKey(id)
+        local keyInfo = key and KeyInfo(key)
+        local listings, complete, sellers
+        if keyInfo then listings, complete, sellers = ReadListings(key, keyInfo) end
+        if listings then
+            local qty = 0
+            for _, l in ipairs(listings) do qty = qty + l.qty end
+            if listings[1] then Flip.RecordHour(realm.hours, id, hour, listings[1].price, qty, day) end
+            if keyInfo.itemName then realm.watch[id] = keyInfo.itemName end
+            watchLive[id] = { listings = listings, complete = complete, sellers = sellers, time = time(), icon = keyInfo.iconFileID }
+        end
+    end
+    return #ids
+end
+
+local function RunWatch()
+    local n = ReadWatched()
+    Status("Read " .. n .. (n == 1 and " watched item" or " watched items") .. " at " .. HourName(Hour()) .. ".")
 end
 
 local function RunScan()
@@ -430,24 +637,28 @@ local function RunScan()
     end
 
     local realm = Realm()
-    local day = math.floor(time() / 86400)
+    local day, hour = Today(), Hour()
     live = {}
     for id, e in pairs(byID) do
         if e.n == 1 then
             Flip.Record(realm.history, id, e.price, day)
+            if realm.watch[id] or Flip.IsTrade(id) then
+                Flip.RecordHour(realm.hours, id, hour, e.price, e.qty, day)
+            end
             live[id] = e
         end
     end
     for id, h in pairs(realm.history) do
         if #h < 2 or h[#h - 1] <= day - HISTORY_DAYS then realm.history[id] = nil end
     end
+    Flip.PruneHours(realm.hours, day)
     liveTime = time()
 
     Status("Pricing " .. total .. " items...")
     local gold = GetMoney()
     local perItem = math.floor(gold * S.maxShare)
     local held = BagItems()
-    local cands, priced, done = {}, 0, 0
+    local cands, cornerCands, priced, done = {}, {}, 0, 0
     for id, e in pairs(live) do
         -- Not what you already sell, and not what you already hold.
         if not e.mine and not held[id] then
@@ -463,6 +674,16 @@ local function RunScan()
             local n = math.min(e.qty, math.floor(perItem / e.price))
             if unit and n >= 1 then
                 cands[#cands + 1] = { id = id, e = e, info = info, vendor = vendor, ah = ah, est = unit * n * weight }
+            end
+            -- Worth watching: a trade good that sells, listed at or under its
+            -- usual price, with little enough listed to buy a real share of it.
+            if not realm.watch[id] and info.sell and info.soldPerDay and e.price <= info.sell
+                and Flip.IsTrade(id) and Flip.Sells(info, e.qty) then
+                local share = math.min(e.qty, info.soldPerDay * CORNER_DAYS, math.floor(perItem / e.price))
+                local gain = (info.sell * CORNER_CAP * (1 - S.cut) - e.price) * share
+                if share >= 1 and gain > 0 then
+                    cornerCands[#cornerCands + 1] = { id = id, e = e, info = info, est = gain * share / e.qty }
+                end
             end
         end
         done = done + 1
@@ -490,6 +711,24 @@ local function RunScan()
     end
     table.sort(plans, function(a, b) return a.score > b.score end)
 
+    table.sort(cornerCands, function(a, b) return a.est > b.est end)
+    suggestions = {}
+    for i = 1, math.min(#cornerCands, SUGGEST_CHECK) do
+        local c = cornerCands[i]
+        Status("Checking " .. i .. " of " .. math.min(#cornerCands, SUGGEST_CHECK) .. " items worth watching...")
+        local keyInfo = KeyInfo(c.e.key)
+        local listings, complete, sellers
+        if keyInfo then listings, complete, sellers = ReadListings(c.e.key, keyInfo) end
+        local plan = listings and Flip.Corner(listings, complete, c.info, perItem)
+        if plan then
+            suggestions[#suggestions + 1] = { id = c.id, key = c.e.key, info = c.info, plan = plan, sellers = sellers,
+                name = keyInfo.itemName or ("item " .. c.id), icon = keyInfo.iconFileID }
+        end
+    end
+    table.sort(suggestions, function(a, b) return a.plan.profit > b.plan.profit end)
+    while #suggestions > SUGGEST_ROWS do table.remove(suggestions) end
+    ReadWatched()
+
     buys = {}
     local left = gold
     for _, plan in ipairs(plans) do
@@ -511,13 +750,13 @@ end
 local events = CreateFrame("Frame")
 local StepScan
 
-local function StartScan()
+local function StartScan(fn)
     if scan then return end
     if not (C_AuctionHouse and C_AuctionHouse.SendBrowseQuery) then
         Status("This client has no modern auction house.")
         return
     end
-    scan = { co = coroutine.create(RunScan) }
+    scan = { co = coroutine.create(fn or RunScan) }
     events:SetScript("OnUpdate", StepScan)
 end
 
@@ -531,6 +770,7 @@ StepScan = function()
     elseif coroutine.status(scan.co) == "dead" then
         scan = nil
         if Render then Render() end
+        if RenderMarket then RenderMarket() end
     end
 end
 
@@ -592,6 +832,8 @@ local function ShowInAH(data)
     C_AuctionHouse.SendBrowseQuery({ searchString = data.name, sorts = {}, filters = {}, itemClassFilters = {} })
 end
 
+local Watch -- defined with the market window
+
 local function RowTooltip(self)
     local d = self.data
     if not d then return end
@@ -611,6 +853,7 @@ local function RowTooltip(self)
     line("TSM sold per day", info.soldPerDay and string.format("%.1f", info.soldPerDay))
     if d.margin then line("Profit on what you pay", string.format("%.0f%%", d.margin * 100)) end
     GameTooltip:AddLine("Click to open it in the auction window.", 0.2, 1, 0.6)
+    GameTooltip:AddLine("Alt-click to watch it in the market window.", 0.2, 1, 0.6)
     GameTooltip:Show()
 end
 
@@ -637,7 +880,10 @@ local function MakeRow(parent)
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(1, 1, 1, 0.08)
-    row:SetScript("OnClick", function(self) if self.data then ShowInAH(self.data) end end)
+    row:SetScript("OnClick", function(self)
+        if not self.data then return end
+        if IsAltKeyDown and IsAltKeyDown() then Watch(self.data.id, self.data.name) else ShowInAH(self.data) end
+    end)
     row:SetScript("OnEnter", RowTooltip)
     row:SetScript("OnLeave", function() GameTooltip:Hide() end)
     return row
@@ -648,6 +894,8 @@ local function Header(parent, text)
     fs:SetText(text)
     return fs
 end
+
+local ShowMarket -- defined with the market window
 
 local function Build()
     panel = CreateFrame("Frame", "OneClickFlipPanel", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -692,7 +940,12 @@ local function Build()
     panel.scan:SetSize(80, 22)
     panel.scan:SetPoint("TOPLEFT", 8, -48)
     panel.scan:SetText("Scan")
-    panel.scan:SetScript("OnClick", StartScan)
+    panel.scan:SetScript("OnClick", function() StartScan(RunScan) end)
+    panel.marketButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    panel.marketButton:SetSize(70, 20)
+    panel.marketButton:SetPoint("TOPRIGHT", -28, -8)
+    panel.marketButton:SetText("Market")
+    panel.marketButton:SetScript("OnClick", function() ShowMarket() end)
     panel.status = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     panel.status:SetPoint("TOPLEFT", panel.scan, "TOPRIGHT", 6, 0)
     panel.status:SetPoint("RIGHT", -10, 0)
@@ -801,8 +1054,376 @@ end
 
 local function ShowPanel()
     if not panel then Build() end
+    panel:SetScale(S.scale)
     panel:Show()
     Render()
+end
+
+
+-- ---------------------------------------------------------------------------
+-- Market window: prices by hour, watched items, cornering
+-- ---------------------------------------------------------------------------
+
+local GRAPH_W, GRAPH_H, BAR_W = 360, 140, 15
+
+local function ItemName(id)
+    local get = C_Item and C_Item.GetItemInfo
+    local name = get and get(id)
+    return type(name) == "string" and name or nil
+end
+
+local function WatchedIDs()
+    local realm, ids = Realm(), {}
+    for id in pairs(realm.watch) do ids[#ids + 1] = id end
+    table.sort(ids, function(a, b) return tostring(realm.watch[a]) < tostring(realm.watch[b]) end)
+    return ids
+end
+
+local function Count(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+end
+
+-- The hour advice for an item, as one sentence.
+local function TimesText(id)
+    local r = Flip.BestHours(Realm().hours[id])
+    if not r.buyHour then
+        return "Not enough data yet: " .. r.ready .. " of 24 hours seen on two days (" .. HOUR_MIN_COUNT
+            .. " needed). Open the auction house at different times of day."
+    end
+    local text = "Cheapest around " .. HourName(r.buyHour) .. ", usually " .. Money(r.buyPrice)
+        .. ". Dearest around " .. HourName(r.sellHour) .. ", usually " .. Money(r.sellPrice)
+        .. ". Buying at the first and selling at the second makes " .. string.format("%.0f%%", r.gap * 100) .. " after the cut"
+    if r.gap < S.minMargin then
+        text = text .. ", under your " .. math.floor(S.minMargin * 100 + 0.5) .. "% margin, so timing alone will not pay."
+    else
+        text = text .. "."
+    end
+    return text, r
+end
+
+-- What is listed now and the corner plan for a watched item.
+local function CornerText(id)
+    local w = watchLive[id]
+    if not w then return "Not read yet. Its listings are read when the auction house opens.", nil end
+    local info = Flip.Info(id)
+    local budget = math.floor(GetMoney() * S.maxShare)
+    local plan, why, total = Flip.Corner(w.listings, w.complete, info, budget)
+    local age = math.floor((time() - w.time) / 60)
+    local supply = "Listed now: " .. total.allQty .. " for " .. Money(total.allCost) .. " in all"
+        .. (w.sellers and (", " .. w.sellers .. " sellers") or "")
+        .. (info.soldPerDay and string.format(". TSM: %.0f sold a day in the region", info.soldPerDay) or "")
+        .. (age >= 1 and (". Read " .. age .. " min ago.") or ".")
+    local held = BagItems()[id]
+    if held then supply = supply .. " You hold " .. held.count .. "." end
+    local text
+    if plan then
+        text = "Corner: buy all " .. plan.qty .. " up to " .. Money(plan.upTo) .. " each (" .. Money(plan.cost)
+            .. "), relist at " .. Money(plan.relist) .. ". Profit " .. Money(plan.profit)
+            .. string.format(" (%.0f%%)", plan.margin * 100)
+            .. (plan.days and string.format(", about %.0f days of TSM sales.", math.max(1, plan.days)) or ", sale pace unknown.")
+    elseif why == "over" then
+        text = "No corner: even the cheapest listings cost more than your limit of " .. Money(budget) .. " for one item."
+    elseif why == "slow" then
+        text = "No corner: buying enough to move the price would take over " .. CORNER_DAYS .. " days to sell."
+    elseif why == "nodata" then
+        text = "No corner: no TSM price or usual price yet to relist at."
+    elseif why == "gone" then
+        text = "Nothing listed by anyone else."
+    else
+        text = "No corner: no price step leaves your " .. math.floor(S.minMargin * 100 + 0.5) .. "% margin within " .. Money(budget) .. "."
+    end
+    return supply, text
+end
+
+local function BarTooltip(self)
+    local v = self.vals and self.vals[self.hour]
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:AddLine(HourName(self.hour), 1, 1, 1)
+    if v then
+        GameTooltip:AddDoubleLine("Cheapest listing, usually", Money(v.p), 0.8, 0.8, 0.8, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Units listed, usually", tostring(v.q), 0.8, 0.8, 0.8, 1, 1, 1)
+        GameTooltip:AddDoubleLine("Days seen", tostring(v.n), 0.8, 0.8, 0.8, 1, 1, 1)
+    else
+        GameTooltip:AddLine("No scans at this hour yet.", 0.8, 0.8, 0.8)
+    end
+    GameTooltip:Show()
+end
+
+local function Text(parent, font, width)
+    local fs = parent:CreateFontString(nil, "OVERLAY", font)
+    fs:SetJustifyH("LEFT")
+    if width then fs:SetWidth(width) end
+    return fs
+end
+
+local function BuildMarket()
+    market = CreateFrame("Frame", "OneClickFlipMarket", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    market:SetSize(570, 580)
+    market:SetFrameStrata("HIGH")
+    market:SetClampedToScreen(true)
+    market:SetMovable(true)
+    market:EnableMouse(true)
+    market:RegisterForDrag("LeftButton")
+    market:SetScript("OnDragStart", market.StartMoving)
+    market:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local point, _, relPoint, x, y = self:GetPoint(1)
+        DB.marketPos = { point, relPoint, x, y }
+    end)
+    if DB.marketPos then
+        market:SetPoint(DB.marketPos[1], UIParent, DB.marketPos[2], DB.marketPos[3], DB.marketPos[4])
+    else
+        market:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -400, -110)
+    end
+    if market.SetBackdrop then
+        market:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true, tileSize = 16, edgeSize = 14,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        market:SetBackdropColor(0, 0, 0, 0.92)
+        market:SetBackdropBorderColor(1, 0.82, 0, 1)
+    end
+
+    local title = market:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 10, -10)
+    title:SetText("OneClickFlip: market")
+    local close = CreateFrame("Button", nil, market, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", 0, 0)
+    close:SetScript("OnClick", function() DB.marketShown = false market:Hide() end)
+
+    -- Watched items on the left.
+    local head = Header(market, "Watching")
+    head:SetPoint("TOPLEFT", 10, -38)
+    market.watchRows = {}
+    for i = 1, MAX_WATCH do
+        local b = CreateFrame("Button", nil, market)
+        b:SetSize(170, 22)
+        b:SetPoint("TOPLEFT", 10, -56 - (i - 1) * 22)
+        b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        b.text = Text(b, "GameFontHighlight", 170)
+        b.text:SetPoint("LEFT", 2, 0)
+        b.text:SetWordWrap(false)
+        local hl = b:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints()
+        hl:SetColorTexture(1, 1, 1, 0.08)
+        b:SetScript("OnClick", function(self, button)
+            if not self.id then return end
+            if button == "RightButton" then
+                local realm = Realm()
+                Print("Stopped watching " .. tostring(realm.watch[self.id]) .. ".")
+                realm.watch[self.id], watchLive[self.id] = nil, nil
+            else
+                Realm().selected = self.id
+            end
+            RenderMarket()
+        end)
+        b:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+            GameTooltip:AddLine("Click to show it. Right-click to stop watching it.", 1, 1, 1)
+            GameTooltip:Show()
+        end)
+        b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        market.watchRows[i] = b
+    end
+    market.watchEmpty = Text(market, "GameFontDisableSmall", 170)
+    market.watchEmpty:SetPoint("TOPLEFT", 12, -58)
+    market.watchEmpty:SetText("Nothing watched yet. Alt-click an item in the main window, click an item under Worth watching, or type /flip watch and shift-click an item.")
+    market.read = CreateFrame("Button", nil, market, "UIPanelButtonTemplate")
+    market.read:SetSize(130, 22)
+    market.read:SetPoint("TOPLEFT", 10, -58 - MAX_WATCH * 22)
+    market.read:SetText("Read watched")
+    market.read:SetScript("OnClick", function()
+        if not auctionOpen then Print("Open the auction house first.") return end
+        StartScan(RunWatch)
+    end)
+
+    -- The graph on the right.
+    local x0 = 192
+    market.name = market:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    market.name:SetPoint("TOPLEFT", x0, -38)
+    market.name:SetWidth(GRAPH_W)
+    market.name:SetJustifyH("LEFT")
+    market.name:SetWordWrap(false)
+    local graph = CreateFrame("Frame", nil, market)
+    graph:SetSize(GRAPH_W, GRAPH_H)
+    graph:SetPoint("TOPLEFT", x0, -62)
+    local bg = graph:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(1, 1, 1, 0.05)
+    market.bars = {}
+    for h = 0, 23 do
+        local b = CreateFrame("Frame", nil, graph)
+        b:SetSize(BAR_W, GRAPH_H)
+        b:SetPoint("BOTTOMLEFT", h * BAR_W, 0)
+        b:EnableMouse(true)
+        b.hour = h
+        b.tex = b:CreateTexture(nil, "ARTWORK")
+        b.tex:SetPoint("BOTTOMLEFT", 1, 0)
+        b.tex:SetPoint("BOTTOMRIGHT", -1, 0)
+        b.tex:SetHeight(1)
+        b:SetScript("OnEnter", BarTooltip)
+        b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        market.bars[h] = b
+    end
+    market.top = Text(graph, "GameFontHighlightSmall")
+    market.top:SetPoint("TOPLEFT", 3, -3)
+    market.bottom = Text(graph, "GameFontHighlightSmall")
+    market.bottom:SetPoint("BOTTOMLEFT", 3, 3)
+    market.now = graph:CreateTexture(nil, "OVERLAY")
+    market.now:SetSize(BAR_W, 3)
+    market.now:SetColorTexture(1, 1, 1, 0.9)
+    for _, h in ipairs({ 0, 6, 12, 18 }) do
+        local fs = Text(market, "GameFontHighlightSmall")
+        fs:SetPoint("TOPLEFT", graph, "BOTTOMLEFT", h * BAR_W, -6)
+        fs:SetText(HourName(h))
+    end
+    market.key = Text(market, "GameFontHighlightSmall", GRAPH_W)
+    market.key:SetPoint("TOPLEFT", graph, "BOTTOMLEFT", 0, -22)
+    market.key:SetText("|cff33ff66Green|r: cheapest hour. |cffffcc00Gold|r: dearest. Gray: seen on one day only. White line: now.")
+    market.times = Text(market, "GameFontHighlight", GRAPH_W)
+    market.times:SetPoint("TOPLEFT", market.key, "BOTTOMLEFT", 0, -8)
+    market.supply = Text(market, "GameFontHighlight", GRAPH_W)
+    market.supply:SetPoint("TOPLEFT", market.times, "BOTTOMLEFT", 0, -8)
+    market.corner = Text(market, "GameFontHighlight", GRAPH_W)
+    market.corner:SetPoint("TOPLEFT", market.supply, "BOTTOMLEFT", 0, -8)
+
+    -- Suggestions along the bottom.
+    market.suggestHeader = Header(market, "Worth watching (from your last full scan; click to watch)")
+    market.suggestHeader:SetPoint("BOTTOMLEFT", 10, 30 + SUGGEST_ROWS * 34)
+    market.suggestRows = {}
+    for i = 1, SUGGEST_ROWS do
+        local row = MakeRow(market)
+        row:SetWidth(550)
+        row:SetPoint("BOTTOMLEFT", 10, 28 + (SUGGEST_ROWS - i) * 34)
+        row:SetScript("OnClick", function(self) if self.data then Watch(self.data.id, self.data.name) end end)
+        market.suggestRows[i] = row
+    end
+    market.suggestEmpty = Text(market, "GameFontDisableSmall", 550)
+    market.suggestEmpty:SetPoint("TOPLEFT", market.suggestRows[1], "TOPLEFT", 0, -4)
+    market.status = Text(market, "GameFontHighlightSmall", 550)
+    market.status:SetPoint("BOTTOMLEFT", 10, 10)
+    market:Hide()
+end
+
+RenderMarket = function()
+    if not market or not market:IsShown() then return end
+    local realm = Realm()
+    local ids = WatchedIDs()
+    if not (realm.selected and realm.watch[realm.selected]) then realm.selected = ids[1] end
+    local id = realm.selected
+    for i, b in ipairs(market.watchRows) do
+        local wid = ids[i]
+        b.id = wid
+        if wid then
+            b.text:SetText(realm.watch[wid])
+            if wid == id then b.text:SetTextColor(1, 0.82, 0) else b.text:SetTextColor(1, 1, 1) end
+            b:Show()
+        else
+            b:Hide()
+        end
+    end
+    if #ids == 0 then market.watchEmpty:Show() else market.watchEmpty:Hide() end
+    if scan or not auctionOpen then market.read:Disable() else market.read:Enable() end
+
+    local hourNow = Hour()
+    if id then
+        market.name:SetText(realm.watch[id])
+        local times, r = TimesText(id)
+        r = r or Flip.BestHours(realm.hours[id])
+        local lo, hi
+        for _, v in pairs(r.vals) do
+            if not lo or v.p < lo then lo = v.p end
+            if not hi or v.p > hi then hi = v.p end
+        end
+        local base = lo and math.floor(lo * 0.9) or 0
+        local range = hi and math.max(hi - base, 1) or 1
+        for h = 0, 23 do
+            local b, v = market.bars[h], r.vals[h]
+            b.vals = r.vals
+            if v then
+                b.tex:SetHeight(math.max(2, (v.p - base) / range * (GRAPH_H - 20)))
+                if h == r.buyHour then b.tex:SetColorTexture(0.2, 1, 0.4, 0.95)
+                elseif h == r.sellHour then b.tex:SetColorTexture(1, 0.8, 0, 0.95)
+                elseif v.n < HOUR_MIN_DAYS then b.tex:SetColorTexture(0.5, 0.5, 0.5, 0.8)
+                else b.tex:SetColorTexture(0.35, 0.6, 1, 0.9) end
+                b.tex:Show()
+            else
+                b.tex:Hide()
+            end
+        end
+        market.top:SetText(hi and Money(hi) or "")
+        market.bottom:SetText(lo and Money(base) or "No scans yet")
+        market.now:ClearAllPoints()
+        market.now:SetPoint("BOTTOMLEFT", market.bars[hourNow], "BOTTOMLEFT", 0, -4)
+        market.now:Show()
+        market.times:SetText(times)
+        local supply, corner = CornerText(id)
+        market.supply:SetText(supply)
+        market.corner:SetText(corner or "")
+    else
+        market.name:SetText("Pick an item to watch")
+        for h = 0, 23 do market.bars[h].tex:Hide() market.bars[h].vals = nil end
+        market.top:SetText("")
+        market.bottom:SetText("")
+        market.now:Hide()
+        market.times:SetText("")
+        market.supply:SetText("")
+        market.corner:SetText("")
+    end
+
+    for i, row in ipairs(market.suggestRows) do
+        local sg = suggestions[i]
+        if sg and not realm.watch[sg.id] then
+            local p = sg.plan
+            FillRow(row, sg, "Watch " .. sg.name .. (sg.sellers and (" (" .. sg.sellers .. " sellers)") or ""), p.profit,
+                "Corner: buy all " .. p.qty .. " up to " .. Money(p.upTo) .. " (" .. Money(p.cost) .. "), relist at "
+                .. Money(p.relist) .. (p.days and string.format(", about %.0f days to sell.", math.max(1, p.days)) or "."))
+        else
+            row.data = nil
+            row:Hide()
+        end
+    end
+    market.suggestEmpty:SetText(#suggestions == 0 and "Run a full Scan in the main window to find trade goods worth watching." or "")
+    market.status:SetText(statusText)
+end
+
+ShowMarket = function()
+    if not market then BuildMarket() end
+    market:SetScale(S.scale)
+    DB.marketShown = true
+    market:Show()
+    RenderMarket()
+end
+
+Watch = function(id, name)
+    if not id then return end
+    local realm = Realm()
+    if not realm.watch[id] then
+        if Count(realm.watch) >= MAX_WATCH then
+            Print("You watch " .. MAX_WATCH .. " items already. Right-click one in the market window to stop watching it.")
+            return
+        end
+        realm.watch[id] = name or ItemName(id) or ("item " .. id)
+        Print("Watching " .. realm.watch[id] .. ". Its listings are read each time the auction house opens.")
+    end
+    realm.selected = id
+    ShowMarket()
+    if auctionOpen and not scan and not watchLive[id] then StartScan(RunWatch) end
+end
+
+-- An item from a link, an item ID or an exact name.
+local function ParseItem(text)
+    local id = tonumber(text:match("item:(%d+)")) or tonumber(text:match("^(%d+)$"))
+    local name = text:match("%[(.-)%]")
+    if not id and text ~= "" and C_Item and C_Item.GetItemInfo then
+        local n, link = C_Item.GetItemInfo(text)
+        if type(link) == "string" then id, name = tonumber(link:match("item:(%d+)")), n end
+    end
+    return id, name
 end
 
 -- ---------------------------------------------------------------------------
@@ -820,9 +1441,33 @@ local function Percent(msg, key, label)
     if Render then Render() end
 end
 
-local function Slash(msg)
-    msg = strlower(strtrim(msg or ""))
-    if msg:find("^margin") then
+local function Slash(raw)
+    raw = strtrim(raw or "")
+    local msg = strlower(raw)
+    local rest = raw:match("^%S+%s+(.+)$") or ""
+    if msg:find("^watch") or msg:find("^unwatch") or msg:find("^times") then
+        local id, name = ParseItem(rest)
+        if not id then
+            Print("Name the item: type /flip " .. msg:match("^%a+") .. " and shift-click the item, or give its exact name or ID.")
+        elseif msg:find("^watch") then
+            Watch(id, name)
+        elseif msg:find("^unwatch") then
+            local realm = Realm()
+            Print(realm.watch[id] and ("Stopped watching " .. realm.watch[id] .. ".") or "That item is not watched.")
+            realm.watch[id], watchLive[id] = nil, nil
+            if RenderMarket then RenderMarket() end
+        else
+            Print((name or Realm().watch[id] or ItemName(id) or ("item " .. id)) .. ": " .. TimesText(id))
+        end
+    elseif msg == "market" then
+        if market and market:IsShown() then DB.marketShown = false market:Hide() else ShowMarket() end
+    elseif msg:find("^size") then
+        local n = tonumber(msg:match("(%d+)"))
+        if n and n >= 70 and n <= 200 then DB.settings.scale = n / 100 end
+        Print("Window size is " .. math.floor(S.scale * 100 + 0.5) .. "%. /flip size 130 makes it bigger (70 to 200).")
+        if panel then panel:SetScale(S.scale) end
+        if market then market:SetScale(S.scale) end
+    elseif msg:find("^margin") then
         Percent(msg, "minMargin", "Least profit on what you pay")
     elseif msg:find("^share") then
         Percent(msg, "maxShare", "Most of your gold for one item")
@@ -833,11 +1478,11 @@ local function Slash(msg)
         if Render then Render() end
     elseif msg == "scan" then
         ShowPanel()
-        StartScan()
+        StartScan(RunScan)
     elseif msg == "" then
         if panel and panel:IsShown() then panel:Hide() else ShowPanel() end
     else
-        Print("/flip shows or hides the window. /flip scan, /flip margin 30, /flip share 25, /flip trade, /flip all.")
+        Print("/flip shows or hides the window. /flip scan, /flip market, /flip watch <item>, /flip unwatch <item>, /flip times <item>, /flip size 130, /flip margin 30, /flip share 25, /flip trade, /flip all.")
     end
 end
 
@@ -852,8 +1497,13 @@ local function OnEvent(_, event, a1)
         SLASH_ONECLICKFLIP2 = "/oneclickflip"
         SlashCmdList.ONECLICKFLIP = Slash
     elseif event == "AUCTION_HOUSE_SHOW" then
+        auctionOpen = true
         ShowPanel()
+        if DB.marketShown then ShowMarket() end
+        if next(Realm().watch) then StartScan(RunWatch) end
     elseif event == "AUCTION_HOUSE_CLOSED" then
+        auctionOpen = false
+        if market then market:Hide() end
         if scan then
             scan = nil
             statusText = "Scan stopped: the auction house closed."
@@ -863,6 +1513,7 @@ local function OnEvent(_, event, a1)
         if scan then scan.dropped = true end
     elseif event == "BAG_UPDATE_DELAYED" or event == "PLAYER_MONEY" then
         if Render then Render() end
+        if RenderMarket then RenderMarket() end
     elseif scan and scan.wait and scan.wait.events[event] then
         if not scan.wait.match or scan.wait.match(a1) then scan.got = event end
     end

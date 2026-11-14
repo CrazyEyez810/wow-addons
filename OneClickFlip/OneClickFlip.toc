@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: OneClickFlip
 ## Notes: An auction house coach: scans the auction house, then lists what to buy, the most to pay, what to relist it for, and what in your bags to post or vendor. Personal use; not released.
-## Version: 0.1.1
+## Version: 0.2.0
 ## OptionalDeps: TradeSkillMaster
 ## SavedVariables: OneClickFlipDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_01

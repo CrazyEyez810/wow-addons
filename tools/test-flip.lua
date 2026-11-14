@@ -11,12 +11,15 @@ local function plain(s) return (tostring(s or ""):gsub("|c%x%x%x%x%x%x%x%x", "")
 -- The game ------------------------------------------------------------------
 local now, clock, gold = 1700000000, 0, 130000 -- 13g
 time = function() return now end
+date = function(f) return os.date(f, now) end
+IsAltKeyDown = function() return false end
 GetTime = function() return clock end
 GetMoney = function() return gold end
 GetRealmName = function() return "Realm" end
 UnitFactionGroup = function() return "Horde" end
 strlower, strtrim = string.lower, function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
-DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) print("     chat: " .. plain(m)) end }
+local lastChat
+DEFAULT_CHAT_FRAME = { AddMessage = function(_, m) lastChat = plain(m) print("     chat: " .. lastChat) end }
 SlashCmdList = {}
 Enum = { AuctionHouseSortOrder = { Price = 4 } }
 
@@ -97,7 +100,11 @@ C_AuctionHouse = {
     if house[key.itemID].commodity then send("COMMODITY_SEARCH_RESULTS_UPDATED", key.itemID) else send("ITEM_SEARCH_RESULTS_UPDATED", key) end
   end,
   GetNumCommoditySearchResults = function(id) return #house[id].listings end,
-  GetCommoditySearchResultInfo = function(id, i) local l = house[id].listings[i] return { unitPrice = l[1], quantity = l[2], containsOwnerItem = house[id].mine and i == 1 } end,
+  GetCommoditySearchResultInfo = function(id, i)
+    local l = house[id].listings[i]
+    return { unitPrice = l[1], quantity = l[2], containsOwnerItem = house[id].mine and i == 1,
+      owners = { "Seller" .. i, "Shared" }, totalNumberOfOwners = 2 }
+  end,
   HasFullCommoditySearchResults = function(id) return not house[id].partial end,
   GetNumItemSearchResults = function(key) return #house[key.itemID].listings end,
   GetItemSearchResultInfo = function(key, i) local l = house[key.itemID].listings[i] return { buyoutAmount = l[1], quantity = l[2] } end,
@@ -182,6 +189,42 @@ check("vendor when the auction house pays no more", sellPlan({ sell = 100 }, nil
 check("vendor when TSM says it sells badly", sellPlan({ sell = 100, saleRate = 0.01 }, nil, 5, false), "vendor 5")
 check("say nothing about an item with no data", sellPlan({}, nil, 5, false), "nothing")
 
+-- Prices by hour --------------------------------------------------------------------
+local hrs = {}
+Flip.RecordHour(hrs, 1, 3, 100, 50, 1)
+check("one day is not enough to name hours", Flip.BestHours(hrs[1]).buyHour, nil)
+for day = 1, 2 do
+  Flip.RecordHour(hrs, 1, 3, 100, 50, day)
+  Flip.RecordHour(hrs, 1, 5, 120, 30, day)
+  Flip.RecordHour(hrs, 1, 8, 120, 30, day)
+  Flip.RecordHour(hrs, 1, 20, 150, 10, day)
+end
+Flip.RecordHour(hrs, 1, 3, 90, 60, 2) -- a cheaper listing later the same day and hour
+local p, q, n = Flip.HourValue(hrs[1][4])
+check("an hour averages its days, keeping each day's cheapest", p .. " " .. q .. " " .. n, "95 55 2")
+local best = Flip.BestHours(hrs[1])
+check("cheapest hour", best.buyHour .. " " .. best.buyPrice, "3 95")
+check("dearest hour", best.sellHour .. " " .. best.sellPrice, "20 150")
+check("gap after the cut", string.format("%.2f", best.gap), "0.50")
+Flip.PruneHours(hrs, 2 + 14)
+check("hours not seen for two weeks are dropped", hrs[1], nil)
+
+-- Cornering -------------------------------------------------------------------------
+local steps = { { price = 1000, qty = 20 }, { price = 1200, qty = 30 }, { price = 2000, qty = 100 } }
+local function corner(list, complete, spd, budget)
+  local plan, why = Flip.Corner(list, complete, { sell = 2000, soldPerDay = spd }, budget)
+  if not plan then return why end
+  return plan.qty .. " up to " .. plan.upTo .. ", relist " .. plan.relist .. ", +" .. plan.profit
+end
+check("corner: buy the two cheap steps, relist under the third", corner(steps, true, 10, 1e9), "50 up to 1200, relist 1999, +38952")
+check("corner: the second step is over budget", corner(steps, true, 10, 30000), "thin")
+check("corner: even the first step is over budget", corner(steps, true, 10, 10000), "over")
+check("corner: too slow to sell", corner(steps, true, 5, 1e9), "slow")
+check("corner: unread listings beyond the last one", corner({ { price = 1000, qty = 20 } }, false, 10, 1e9), "thin")
+check("corner: your own listings are neither bought nor undercut",
+  corner({ { price = 1000, qty = 20 }, { price = 1100, qty = 5, mine = true }, { price = 2000, qty = 100 } }, true, 10, 1e9),
+  "20 up to 1000, relist 1999, +17981")
+
 -- A full scan ---------------------------------------------------------------------
 OnEvent(events, "AUCTION_HOUSE_SHOW")
 dropNext = true -- the first request is dropped by the throttle and must be sent again
@@ -201,6 +244,51 @@ check("the stone under vendor price comes first: that profit is certain", row("b
 check("then the ore, relisted under the next listing", row("buyRows", 2),
   "Buy 20 Copper Ore | +9s 86c | Pay up to 40c each (8s). Relist at 94c each, sells fast.")
 check("nothing else: recipe, wall, slow seller, own item, thin margin, partial results, gear endings", row("buyRows", 3), "")
+
+-- The market window -------------------------------------------------------------------
+SlashCmdList.ONECLICKFLIP("market")
+local market = OneClickFlipMarket
+local function srow(i)
+  local r = market.suggestRows[i]
+  if not r.shown then return "" end
+  return plain(r.top.text) .. " | +" .. plain(r.profit.text):gsub("^%+", "") .. " | " .. plain(r.bottom.text)
+end
+check("the scan suggests the ore as worth watching", srow(1),
+  "Watch Copper Ore (3 sellers) | +9s 86c | Corner: buy all 20 up to 40c (8s), relist at 94c, about 1 days to sell.")
+check("nothing else is worth watching", srow(2), "")
+check("an empty watch list says how to add items", market.watchEmpty.shown, true)
+market.suggestRows[1].scripts.OnClick(market.suggestRows[1])
+for _ = 1, 200 do tick() end
+check("clicking a suggestion watches it", OneClickFlipDB.realms["Realm-Horde"].watch[2770], "Copper Ore")
+check("its listings were read", plain(market.supply.text), "Listed now: 320 for 2g 93s in all, 3 sellers. TSM: 200 sold a day in the region.")
+check("and its corner plan shown", plain(market.corner.text),
+  "Corner: buy all 20 up to 40c each (8s), relist at 94c. Profit 9s 86c (123%), about 1 days of TSM sales.")
+check("a watched item is no longer suggested", srow(1), "")
+check("one scan is not enough for hour advice", plain(market.times.text):match("^Not enough data yet"), "Not enough data yet")
+
+-- Scans at four hours on two days name the cheapest and dearest hours.
+local saved, ore0 = now, house[2770].listings
+local hourPrices = { 30, 60, 80, 90 }
+for day = 0, 1 do
+  for i, price in ipairs(hourPrices) do
+    now = saved + day * 86400 + i * 3600
+    house[2770].listings = { { price, 20 }, { 95, 300 } }
+    OnEvent(events, "AUCTION_HOUSE_SHOW")
+    for _ = 1, 200 do tick() end
+  end
+end
+SlashCmdList.ONECLICKFLIP("times 2770")
+local h1, h4 = tonumber(os.date("%H", saved + 3600)), tonumber(os.date("%H", saved + 4 * 3600))
+local function hn(h) local x = h % 12 return (x == 0 and 12 or x) .. (h < 12 and " AM" or " PM") end
+check("/flip times names the cheapest and dearest hours", lastChat,
+  "OneClickFlip: Copper Ore: Cheapest around " .. hn(h1) .. ", usually 30c. Dearest around " .. hn(h4)
+  .. ", usually 90c. Buying at the first and selling at the second makes 185% after the cut.")
+check("the cheapest hour's bar is drawn", market.bars[h1].tex.shown, true)
+now, house[2770].listings = saved, ore0
+OnEvent(events, "AUCTION_HOUSE_SHOW")
+for _ = 1, 200 do tick() end
+SlashCmdList.ONECLICKFLIP("unwatch 2770")
+check("/flip unwatch stops watching", OneClickFlipDB.realms["Realm-Horde"].watch[2770], nil)
 
 -- You bought the ore: it moves to the sell list and is not suggested again.
 bags[#bags + 1], bags[#bags + 2] = ore, ore

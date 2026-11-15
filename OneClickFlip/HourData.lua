@@ -1,0 +1,2 @@
+-- Replaced in the installed copy by tools/flip-collector.py with prices by hour.
+-- This empty copy only keeps the game from reporting a missing file.

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Runs tools/flip-collector.py five minutes past every hour.
+     Install: cp tools/flip-collector.py ~/.config/oneclickflip/
+              cp tools/flip-collector.plist ~/Library/LaunchAgents/com.oneclickflip.collector.plist
+              launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.oneclickflip.collector.plist
+     Remove:  launchctl bootout gui/$(id -u)/com.oneclickflip.collector -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.oneclickflip.collector</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-I</string>
+        <string>/Users/cr4zy3y3z/.config/oneclickflip/flip-collector.py</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>5</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/cr4zy3y3z/.config/oneclickflip/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/cr4zy3y3z/.config/oneclickflip/launchd.log</string>
+</dict>
+</plist>

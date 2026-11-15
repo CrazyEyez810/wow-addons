@@ -48,6 +48,9 @@
 --     that fits the per-item budget, keeps the minimum margin and sells
 --     within 7 days at TSM's pace.
 --   - A full scan also suggests up to 4 trade goods worth watching.
+--   - tools/flip-collector.py, run hourly outside the game, saves Blizzard's
+--     hourly auction data and writes HourData.lua into this folder. When
+--     that file has an item, its hours are used instead of your own scans.
 
 local ADDON = ...
 
@@ -355,13 +358,20 @@ end
 -- Every hour's values (vals[0..23]) and, once enough hours have been seen on
 -- two days, the cheapest and dearest hours and the gap between them after
 -- the cut.
-function Flip.BestHours(t)
+-- vals, when given, replaces the buckets: [hour] = { p, q, n } from the
+-- collector's file.
+function Flip.BestHours(t, vals)
     local r = { vals = {}, covered = 0, ready = 0 }
     for h = 0, 23 do
-        local b = t and t[h + 1]
+        local v = vals and vals[h]
+        local b = not vals and t and t[h + 1]
         if b then
             local p, q, n = Flip.HourValue(b)
-            r.vals[h] = { p = p, q = q, n = n }
+            v = { p = p, q = q, n = n }
+        end
+        if v then
+            local p, n = v.p, v.n
+            r.vals[h] = v
             r.covered = r.covered + 1
             if n >= HOUR_MIN_DAYS then
                 r.ready = r.ready + 1
@@ -1085,14 +1095,37 @@ local function Count(t)
     return n
 end
 
--- The hour advice for an item, as one sentence.
-local function TimesText(id)
-    local r = Flip.BestHours(Realm().hours[id])
-    if not r.buyHour then
-        return "Not enough data yet: " .. r.ready .. " of 24 hours seen on two days (" .. HOUR_MIN_COUNT
-            .. " needed). Open the auction house at different times of day."
+-- An item's hours from the collector's file (HourData.lua), or nil. Each
+-- item is one string of 24 "price:qty:days" fields, read when first asked for.
+local apiVals = {}
+local function ApiHours(id)
+    local data = _G.OneClickFlipHourData
+    local s = type(data) == "table" and type(data.items) == "table" and data.items[id]
+    if type(s) ~= "string" then return nil end
+    local vals = apiVals[id]
+    if vals then return vals end
+    vals = {}
+    local h = 0
+    for field in (s .. ","):gmatch("([^,]*),") do
+        local p, q, n = field:match("^(%d+):(%d+):(%d+)$")
+        if p then vals[h] = { p = tonumber(p), q = tonumber(q), n = tonumber(n) } end
+        h = h + 1
     end
-    local text = "Cheapest around " .. HourName(r.buyHour) .. ", usually " .. Money(r.buyPrice)
+    apiVals[id] = vals
+    return vals
+end
+
+-- The hour advice for an item, as one sentence, and the hours behind it.
+local function TimesText(id)
+    local api = ApiHours(id)
+    local r = Flip.BestHours(Realm().hours[id], api)
+    local source = api and "Blizzard's hourly data: " or "Your scans: "
+    if not r.buyHour then
+        return source .. "not enough yet, " .. r.ready .. " of 24 hours seen on two days (" .. HOUR_MIN_COUNT
+            .. " needed). " .. (api and "The collector adds an hour every hour."
+            or "Open the auction house at different times of day."), r
+    end
+    local text = source .. "cheapest around " .. HourName(r.buyHour) .. ", usually " .. Money(r.buyPrice)
         .. ". Dearest around " .. HourName(r.sellHour) .. ", usually " .. Money(r.sellPrice)
         .. ". Buying at the first and selling at the second makes " .. string.format("%.0f%%", r.gap * 100) .. " after the cut"
     if r.gap < S.minMargin then
@@ -1333,7 +1366,6 @@ RenderMarket = function()
     if id then
         market.name:SetText(realm.watch[id])
         local times, r = TimesText(id)
-        r = r or Flip.BestHours(realm.hours[id])
         local lo, hi
         for _, v in pairs(r.vals) do
             if not lo or v.p < lo then lo = v.p end
@@ -1457,7 +1489,7 @@ local function Slash(raw)
             realm.watch[id], watchLive[id] = nil, nil
             if RenderMarket then RenderMarket() end
         else
-            Print((name or Realm().watch[id] or ItemName(id) or ("item " .. id)) .. ": " .. TimesText(id))
+            Print((name or Realm().watch[id] or ItemName(id) or ("item " .. id)) .. ": " .. (TimesText(id)))
         end
     elseif msg == "market" then
         if market and market:IsShown() then DB.marketShown = false market:Hide() else ShowMarket() end

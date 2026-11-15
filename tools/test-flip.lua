@@ -264,7 +264,7 @@ check("its listings were read", plain(market.supply.text), "Listed now: 320 for 
 check("and its corner plan shown", plain(market.corner.text),
   "Corner: buy all 20 up to 40c each (8s), relist at 94c. Profit 9s 86c (123%), about 1 days of TSM sales.")
 check("a watched item is no longer suggested", srow(1), "")
-check("one scan is not enough for hour advice", plain(market.times.text):match("^Not enough data yet"), "Not enough data yet")
+check("one scan is not enough for hour advice", plain(market.times.text):match("^Your scans: not enough yet"), "Your scans: not enough yet")
 
 -- Scans at four hours on two days name the cheapest and dearest hours.
 local saved, ore0 = now, house[2770].listings
@@ -281,12 +281,19 @@ SlashCmdList.ONECLICKFLIP("times 2770")
 local h1, h4 = tonumber(os.date("%H", saved + 3600)), tonumber(os.date("%H", saved + 4 * 3600))
 local function hn(h) local x = h % 12 return (x == 0 and 12 or x) .. (h < 12 and " AM" or " PM") end
 check("/flip times names the cheapest and dearest hours", lastChat,
-  "OneClickFlip: Copper Ore: Cheapest around " .. hn(h1) .. ", usually 30c. Dearest around " .. hn(h4)
+  "OneClickFlip: Copper Ore: Your scans: cheapest around " .. hn(h1) .. ", usually 30c. Dearest around " .. hn(h4)
   .. ", usually 90c. Buying at the first and selling at the second makes 185% after the cut.")
 check("the cheapest hour's bar is drawn", market.bars[h1].tex.shown, true)
 now, house[2770].listings = saved, ore0
 OnEvent(events, "AUCTION_HOUSE_SHOW")
 for _ = 1, 200 do tick() end
+-- The collector's file takes over for the items it has.
+OneClickFlipHourData = { items = { [4306] = "100:50:3,,,160:20:3,120:5:3,130:5:1,140:9:2" .. string.rep(",", 17) } }
+SlashCmdList.ONECLICKFLIP("times 4306")
+check("hours from the collector's file are used when it has the item", lastChat,
+  "OneClickFlip: x: Blizzard's hourly data: cheapest around 12 AM, usually 1s. Dearest around 3 AM, usually 1s 60c."
+  .. " Buying at the first and selling at the second makes 52% after the cut.")
+OneClickFlipHourData = nil
 SlashCmdList.ONECLICKFLIP("unwatch 2770")
 check("/flip unwatch stops watching", OneClickFlipDB.realms["Realm-Horde"].watch[2770], nil)
 

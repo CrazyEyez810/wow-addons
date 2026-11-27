@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: BGRep
+## Notes: Battleground reputation after every match: rep gained, progress bars, matches and time to the next standing, today's totals and recent matches. Type /bgrep.
+## Version: 0.4.0
+## X-Curse-Project-ID: 1835832
+## SavedVariables: BGRepDB
+## IconTexture: Interface\Icons\INV_BannerPVP_02
+
+BGRep.lua

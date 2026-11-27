@@ -7,10 +7,12 @@ Addons for WoW Forever by CrazyEyez810. Each folder is one addon with its own Cu
 - `OneClickPace/` tells you when a quest spot is contested and you should leave and come back later.
 - `OneClickMail/` mails items to your own alts by rules from a One Click tab in the mailbox.
 - `OneClickSplits/` is a see-through speedrun panel with a target time for each level 1-60, scaled to verified solo speedruns.
+- `BGRep/` shows your battleground reputation after every match: rep gained, progress to the next standing, today's totals and recent matches.
 - `OneClickFlip/` is an auction house coach for personal use: click Scan at the auction house and it lists what to buy, the most to pay, what to relist it for, and what in your bags to post or vendor. It reads TradeSkillMaster's prices when TSM is loaded. It has no release tag in the workflow, so it is never uploaded to CurseForge.
 - `tools/test-pace.lua` runs OneClickPace against a fake game: `luajit tools/test-pace.lua OneClickPace/OneClickPace.lua`.
 - `tools/test-mail.lua` checks which bag items each OneClickMail rule picks: `luajit tools/test-mail.lua OneClickMail/OneClickMail.lua`.
 - `tools/test-splits.lua` runs OneClickSplits against a fake game: `luajit tools/test-splits.lua OneClickSplits/OneClickSplits.lua`.
+- `tools/test-bgrep.lua` runs BGRep through Alliance and Horde matches against a fake game: `luajit tools/test-bgrep.lua BGRep/BGRep.lua`.
 - `tools/test-flip.lua` runs OneClickFlip against a fake auction house, TradeSkillMaster and bags: `luajit tools/test-flip.lua OneClickFlip/OneClickFlip.lua`.
 - `tools/launch-day-copy.sh` copies your addons and their settings from one WoW folder to another, such as from the beta to the live client. Put it in the World of Warcraft folder and run it with WoW closed.
 
